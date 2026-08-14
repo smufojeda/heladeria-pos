@@ -29,7 +29,11 @@ import {
   AlertTriangle,
   Award,
   Clock,
-  Receipt,
+  Trash2,
+  Edit3,
+  Archive,
+  History,
+  CheckCircle2,
 } from "lucide-react";
 
 interface PagoParcial {
@@ -71,10 +75,24 @@ interface Producto {
   disponible: boolean;
 }
 
+interface CierreSemanal {
+  id: number;
+  created_at: string;
+  fecha_inicio: string;
+  fecha_fin: string;
+  total_ingresos: number;
+  total_gastos: number;
+  caja_neta: number;
+  total_fiados_pendientes: number;
+  ventas_resumen: Venta[];
+  gastos_resumen: Gasto[];
+}
+
 export default function AdminDashboard() {
   const [ventas, setVentas] = useState<Venta[]>([]);
   const [gastos, setGastos] = useState<Gasto[]>([]);
   const [productos, setProductos] = useState<Producto[]>([]);
+  const [cierresSemanales, setCierresSemanales] = useState<CierreSemanal[]>([]);
   const [loading, setLoading] = useState(true);
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
 
@@ -90,13 +108,17 @@ export default function AdminDashboard() {
   const [selectedFiado, setSelectedFiado] = useState<Venta | null>(null);
   const [newPaymentMethod, setNewPaymentMethod] = useState<"efectivo" | "nequi" | "daviplata" | "tarjeta">("efectivo");
   const [showAllFiadosModal, setShowAllFiadosModal] = useState(false);
-
-  // Modal para ver y registrar todos los gastos
   const [showAllGastosModal, setShowAllGastosModal] = useState(false);
-
   const [showGastoModal, setShowGastoModal] = useState<string | null>(null);
   const [gastoText, setGastoText] = useState("");
   const [gastoMonto, setGastoMonto] = useState("");
+
+  // Modales de Modificar Stock, Cierre Semanal e Historial
+  const [editingStockProduct, setEditingStockProduct] = useState<Producto | null>(null);
+  const [newStockValue, setNewStockValue] = useState<string>("");
+  const [showCerrarSemanaModal, setShowCerrarSemanaModal] = useState(false);
+  const [showHistorialSemanalModal, setShowHistorialSemanalModal] = useState(false);
+  const [selectedSemanaDetalle, setSelectedSemanaDetalle] = useState<CierreSemanal | null>(null);
 
   const loadData = async () => {
     setLoading(true);
@@ -104,10 +126,12 @@ export default function AdminDashboard() {
       const { data: vData } = await supabase.from("ventas").select("*").order("created_at", { ascending: false });
       const { data: pData } = await supabase.from("productos").select("*").order("stock", { ascending: true });
       const { data: gData } = await supabase.from("gastos").select("*").order("created_at", { ascending: false });
+      const { data: cData } = await supabase.from("cierres_semanales").select("*").order("created_at", { ascending: false });
 
       if (vData) setVentas(vData as Venta[]);
       if (pData) setProductos(pData as Producto[]);
       if (gData) setGastos(gData as Gasto[]);
+      if (cData) setCierresSemanales(cData as CierreSemanal[]);
     } catch (_) {}
     setLoading(false);
   };
@@ -152,6 +176,85 @@ export default function AdminDashboard() {
 
   const toggleItems = (ventaId: number) => {
     setOpenItems((prev) => ({ ...prev, [ventaId]: !prev[ventaId] }));
+  };
+
+  // Modificar Stock
+  const handleSaveStock = async () => {
+    if (!editingStockProduct) return;
+    const stockVal = parseInt(newStockValue);
+    if (isNaN(stockVal) || stockVal < 0) return alert("Ingresa una cantidad de stock válida.");
+
+    const { error } = await supabase
+      .from("productos")
+      .update({ stock: stockVal, disponible: stockVal > 0 })
+      .eq("id", editingStockProduct.id);
+
+    if (!error) {
+      setEditingStockProduct(null);
+      loadData();
+    } else {
+      alert("Error al actualizar stock.");
+    }
+  };
+
+  // Eliminar un día específico
+  const handleDeleteDia = async (fecha: string) => {
+    if (confirm(`¿Estás seguro de eliminar TODOS los registros (ventas, deudas y gastos) del día ${fecha}? Esta acción no se puede deshacer.`)) {
+      const ventasDelDia = ventasPorDia[fecha] || [];
+      const gastosDelDia = gastosPorDia[fecha] || [];
+
+      const ventaIds = ventasDelDia.map((v) => v.id);
+      const gastoIds = gastosDelDia.map((g) => g.id).filter(Boolean);
+
+      if (ventaIds.length > 0) {
+        await supabase.from("ventas").delete().in("id", ventaIds);
+      }
+      if (gastoIds.length > 0) {
+        await supabase.from("gastos").delete().in("id", gastoIds);
+      }
+
+      loadData();
+    }
+  };
+
+  // Ejecutar Cierre Semanal
+  const handleConfirmCerrarSemana = async () => {
+    if (ventas.length === 0 && gastos.length === 0) {
+      alert("No hay registros activos para archivar en este cierre de semana.");
+      setShowCerrarSemanaModal(false);
+      return;
+    }
+
+    const fechasVentas = ventas.map((v) => new Date(v.created_at).toISOString().split("T")[0]);
+    const fechasGastos = gastos.map((g) => g.fecha);
+    const todasFechas = [...fechasVentas, ...fechasGastos].sort();
+
+    const fechaInicio = todasFechas[0] || new Date().toISOString().split("T")[0];
+    const fechaFin = todasFechas[todasFechas.length - 1] || new Date().toISOString().split("T")[0];
+
+    const { error } = await supabase.from("cierres_semanales").insert({
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
+      total_ingresos: totalIngresos,
+      total_gastos: totalGastosCompras,
+      caja_neta: totalIngresos - totalGastosCompras,
+      total_fiados_pendientes: totalFiadosPendientes,
+      ventas_resumen: ventas,
+      gastos_resumen: gastos,
+    });
+
+    if (!error) {
+      const vIds = ventas.map((v) => v.id);
+      const gIds = gastos.map((g) => g.id).filter(Boolean);
+
+      if (vIds.length > 0) await supabase.from("ventas").delete().in("id", vIds);
+      if (gIds.length > 0) await supabase.from("gastos").delete().in("id", gIds);
+
+      setShowCerrarSemanaModal(false);
+      loadData();
+    } else {
+      alert("Ocurrió un error al intentar cerrar y archivar la semana.");
+    }
   };
 
   const handleSaldarFiado = async () => {
@@ -289,7 +392,7 @@ export default function AdminDashboard() {
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased p-3 sm:p-6 lg:p-8 selection:bg-pink-500 selection:text-white">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* HEADER ADMIN CON BOTÓN DE GASTOS */}
+        {/* HEADER ADMIN CON BOTONES DE CERRAR SEMANA E HISTORIAL */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-slate-900/90 border border-pink-500/30 p-4 sm:p-5 rounded-3xl shadow-2xl backdrop-blur-md">
           <div className="flex items-center gap-3">
             <Link href="/" className="p-2.5 bg-slate-950 border border-slate-800 rounded-2xl hover:bg-slate-800 text-pink-400 transition-all cursor-pointer">
@@ -306,6 +409,22 @@ export default function AdminDashboard() {
           </div>
 
           <div className="flex items-center gap-2.5 w-full sm:w-auto flex-wrap">
+            {/* BOTÓN HISTORIAL SEMANAL */}
+            <button
+              onClick={() => setShowHistorialSemanalModal(true)}
+              className="flex-1 sm:flex-none px-3.5 py-2.5 bg-slate-950 border border-purple-500/40 text-purple-300 hover:bg-purple-950/40 font-black rounded-xl text-xs uppercase flex items-center justify-center gap-2 transition-all cursor-pointer"
+            >
+              <History className="w-4 h-4 text-purple-400" /> Historial Semanal ({cierresSemanales.length})
+            </button>
+
+            {/* BOTÓN CERRAR SEMANA */}
+            <button
+              onClick={() => setShowCerrarSemanaModal(true)}
+              className="flex-1 sm:flex-none px-4 py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 hover:from-cyan-400 hover:to-blue-500 font-black rounded-xl text-xs uppercase flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(6,182,212,0.4)] cursor-pointer active:scale-95 transition-all"
+            >
+              <Archive className="w-4 h-4" /> Cerrar Semana
+            </button>
+
             {/* BOTÓN HISTORIAL DE GASTOS */}
             <button
               onClick={() => setShowAllGastosModal(true)}
@@ -323,8 +442,8 @@ export default function AdminDashboard() {
             </button>
 
             {/* BOTÓN REFRESCAR */}
-            <button onClick={loadData} className="px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-xs font-black text-cyan-300 transition-all flex items-center justify-center gap-2 cursor-pointer hover:bg-slate-700">
-              <RefreshCw className="w-4 h-4" /> <span className="hidden sm:inline">Actualizar</span>
+            <button onClick={loadData} className="px-3 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-xs font-black text-cyan-300 transition-all flex items-center justify-center gap-2 cursor-pointer hover:bg-slate-700">
+              <RefreshCw className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -591,17 +710,26 @@ export default function AdminDashboard() {
                         </div>
                       </button>
 
-                      <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
-                        <div className="text-right">
+                      <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-end flex-wrap">
+                        <div className="text-right mr-2">
                           <span className="text-[9px] font-black uppercase text-slate-400 block">Total Neto Día</span>
                           <span className="font-mono text-emerald-400 font-black text-sm">${totalNetoDia.toLocaleString()}</span>
                         </div>
 
                         <button
                           onClick={() => setShowGastoModal(fecha)}
-                          className="px-3 py-1.5 bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-black hover:bg-rose-500 hover:text-white transition-all flex items-center gap-1 cursor-pointer"
+                          className="px-2.5 py-1.5 bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-black hover:bg-rose-500 hover:text-white transition-all flex items-center gap-1 cursor-pointer"
                         >
                           <PlusCircle className="w-3.5 h-3.5" /> Gastos
+                        </button>
+
+                        {/* BOTÓN ELIMINAR CARPETA DÍA INVENTADO/INDIVIDUAL */}
+                        <button
+                          onClick={() => handleDeleteDia(fecha)}
+                          className="p-1.5 bg-rose-500/10 hover:bg-rose-500 border border-rose-500/30 text-rose-400 hover:text-white rounded-xl transition-all cursor-pointer"
+                          title="Eliminar registro completo de este día"
+                        >
+                          <Trash2 className="w-4 h-4" />
                         </button>
 
                         <button onClick={() => toggleFolder(fecha)} className="p-1 cursor-pointer">
@@ -755,7 +883,7 @@ export default function AdminDashboard() {
             )}
           </div>
 
-          {/* CONTROL STOCK */}
+          {/* CONTROL STOCK CON EDICIÓN HABILITADA */}
           <div className="space-y-4">
             <h3 className="text-lg font-black text-white flex items-center gap-2">
               <Package className="w-5 h-5 text-cyan-400" /> Control de Stock
@@ -776,11 +904,25 @@ export default function AdminDashboard() {
                         <span className="text-[9px] font-bold text-slate-400 uppercase">{p.categoria}</span>
                       </div>
 
-                      <div className="text-right">
-                        <span className={`text-xs font-black font-mono block ${isLow ? "text-rose-400" : "text-emerald-400"}`}>
-                          {stockVal} Unidades
-                        </span>
-                        {isLow && <span className="text-[8px] font-black text-rose-500 uppercase flex items-center justify-end gap-1"><AlertTriangle className="w-2.5 h-2.5" /> Stock Bajo</span>}
+                      <div className="flex items-center gap-2.5">
+                        <div className="text-right">
+                          <span className={`text-xs font-black font-mono block ${isLow ? "text-rose-400" : "text-emerald-400"}`}>
+                            {stockVal} Unidades
+                          </span>
+                          {isLow && <span className="text-[8px] font-black text-rose-500 uppercase flex items-center justify-end gap-1"><AlertTriangle className="w-2.5 h-2.5" /> Stock Bajo</span>}
+                        </div>
+
+                        {/* BOTÓN PARA MODIFICAR STOCK */}
+                        <button
+                          onClick={() => {
+                            setEditingStockProduct(p);
+                            setNewStockValue(stockVal.toString());
+                          }}
+                          className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-cyan-300 hover:text-cyan-200 rounded-xl transition-all cursor-pointer"
+                          title="Modificar Stock"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
                   );
@@ -790,6 +932,198 @@ export default function AdminDashboard() {
           </div>
         </div>
       </div>
+
+      {/* MODAL EDITAR STOCK */}
+      {editingStockProduct && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-sm text-white flex items-center gap-2">
+                <Package className="w-4 h-4 text-cyan-400" /> Modificar Stock
+              </h3>
+              <button onClick={() => setEditingStockProduct(null)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div>
+              <span className="text-xs font-black text-slate-200 block">{editingStockProduct.nombre}</span>
+              <span className="text-[10px] text-slate-400 uppercase font-bold">{editingStockProduct.categoria}</span>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-400 block mb-1">Nueva Cantidad Disponible:</label>
+              <input
+                type="number"
+                value={newStockValue}
+                onChange={(e) => setNewStockValue(e.target.value)}
+                className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm font-black text-white focus:outline-none focus:border-cyan-500 font-mono"
+              />
+            </div>
+
+            <button
+              onClick={handleSaveStock}
+              className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-black text-xs uppercase rounded-2xl shadow-lg cursor-pointer active:scale-95 transition-all"
+            >
+              Guardar Nuevo Stock
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CERRAR SEMANA (CON MENSAJE DE CONFIRMACIÓN) */}
+      {showCerrarSemanaModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl relative space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-base text-white flex items-center gap-2">
+                <Archive className="w-5 h-5 text-cyan-400" /> Cierre de Semana
+              </h3>
+              <button onClick={() => setShowCerrarSemanaModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl space-y-2">
+              <p className="text-xs font-bold text-amber-300 leading-relaxed">
+                ¿Estás seguro de que quieres hacer el cierre de semana? Se eliminarán todos los datos de la pantalla inicial y se archivará la semana en el Historial Semanal.
+              </p>
+              <p className="text-[11px] font-black text-emerald-400 pt-1">
+                📌 Nota: Los stocks de productos permanecerán intactos sin reiniciar.
+              </p>
+            </div>
+
+            <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs space-y-1 font-mono">
+              <div className="flex justify-between text-slate-300"><span>Ventas a archivar:</span><span className="text-emerald-400">${totalIngresos.toLocaleString()}</span></div>
+              <div className="flex justify-between text-slate-300"><span>Gastos a archivar:</span><span className="text-rose-400">${totalGastosCompras.toLocaleString()}</span></div>
+              <div className="flex justify-between text-slate-300 font-black pt-1 border-t border-slate-900"><span>Caja Neta:</span><span className="text-cyan-400">${(totalIngresos - totalGastosCompras).toLocaleString()}</span></div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button
+                onClick={() => setShowCerrarSemanaModal(false)}
+                className="py-3 bg-slate-950 hover:bg-slate-800 text-slate-300 font-black text-xs uppercase rounded-2xl border border-slate-800 cursor-pointer transition-all"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmCerrarSemana}
+                className="py-3 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs uppercase rounded-2xl shadow-lg cursor-pointer transition-all active:scale-95"
+              >
+                Aceptar y Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL HISTORIAL SEMANAL */}
+      {showHistorialSemanalModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-3xl w-full shadow-2xl relative space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-base sm:text-lg text-white flex items-center gap-2">
+                <History className="w-5 h-5 text-purple-400" /> Historial de Semanas Archivadas
+              </h3>
+              <button onClick={() => setShowHistorialSemanalModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {cierresSemanales.length === 0 ? (
+              <div className="text-center py-10 text-slate-500 font-bold text-xs">
+                📂 No hay semanas archivadas hasta el momento.
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                {cierresSemanales.map((semana) => (
+                  <div key={semana.id} className="bg-slate-950 p-4 rounded-2xl border border-purple-500/30 space-y-3">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-900">
+                      <div>
+                        <span className="font-black text-xs text-purple-300 block uppercase">
+                          Semana: {semana.fecha_inicio} al {semana.fecha_fin}
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          Archivado: {new Date(semana.created_at).toLocaleString()}
+                        </span>
+                      </div>
+                      <span className="font-mono text-cyan-400 font-black text-sm">
+                        Caja Neta: ${semana.caja_neta.toLocaleString()}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs font-bold">
+                      <div className="p-2 bg-slate-900 rounded-xl border border-slate-800">
+                        <span className="text-[9px] text-slate-400 block uppercase">Ingresos</span>
+                        <span className="text-emerald-400 font-mono">${semana.total_ingresos.toLocaleString()}</span>
+                      </div>
+                      <div className="p-2 bg-slate-900 rounded-xl border border-slate-800">
+                        <span className="text-[9px] text-slate-400 block uppercase">Gastos</span>
+                        <span className="text-rose-400 font-mono">${semana.total_gastos.toLocaleString()}</span>
+                      </div>
+                      <div className="p-2 bg-slate-900 rounded-xl border border-slate-800">
+                        <span className="text-[9px] text-slate-400 block uppercase">Fiados Pend.</span>
+                        <span className="text-amber-400 font-mono">${semana.total_fiados_pendientes.toLocaleString()}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <button
+                        onClick={() => setSelectedSemanaDetalle(semana)}
+                        className="px-3 py-1 bg-purple-500/20 text-purple-300 border border-purple-500/40 rounded-xl text-[10px] font-black uppercase hover:bg-purple-500 hover:text-white transition-all cursor-pointer"
+                      >
+                        Ver Detalle Completo
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DETALLE DE SEMANA */}
+      {selectedSemanaDetalle && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-2xl w-full shadow-2xl relative space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-sm text-white uppercase">
+                Detalle Cierre: {selectedSemanaDetalle.fecha_inicio} al {selectedSemanaDetalle.fecha_fin}
+              </h3>
+              <button onClick={() => setSelectedSemanaDetalle(null)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              <div>
+                <h4 className="text-xs font-black text-pink-400 uppercase mb-2">Resumen de Ventas Registradas:</h4>
+                <div className="space-y-1.5">
+                  {selectedSemanaDetalle.ventas_resumen?.map((v, idx) => (
+                    <div key={idx} className="p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex justify-between items-center">
+                      <span>Mesa #{v.numero_mesa || v.mesa_id} ({v.metodo_pago})</span>
+                      <span className="font-mono text-emerald-400 font-bold">${v.total?.toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-xs font-black text-rose-400 uppercase mb-2">Resumen de Gastos:</h4>
+                <div className="space-y-1.5">
+                  {selectedSemanaDetalle.gastos_resumen?.map((g, idx) => (
+                    <div key={idx} className="p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex justify-between items-center">
+                      <span>{g.descripcion} ({g.fecha})</span>
+                      <span className="font-mono text-rose-400 font-bold">-${g.monto?.toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL VER TODOS LOS GASTOS DE LA BASE DE DATOS */}
       {showAllGastosModal && (

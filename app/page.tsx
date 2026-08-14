@@ -28,6 +28,8 @@ import {
   Lock,
   ChevronUp,
   ChevronDown,
+  Sparkle,
+  Zap
 } from "lucide-react";
 
 type EstadoMesa = "libre" | "pendiente_servir" | "preparado" | "servido" | "pendiente_pago";
@@ -83,6 +85,12 @@ interface PedidoCocina {
     productos: { nombre: string };
   }[];
 }
+
+// Función auxiliar para formatear los números con puntos de miles (ej: 1.000 / 100.000 / 1.000.000)
+const formatCurrency = (amount: number | undefined | null) => {
+  if (amount === undefined || amount === null || isNaN(amount)) return "0";
+  return amount.toLocaleString("es-CO");
+};
 
 export default function HomePOS() {
   const [vista, setVista] = useState<ModoVista>("mesero");
@@ -154,8 +162,38 @@ export default function HomePOS() {
     if (data) setPedidosCocina(data as any);
   };
 
+  // SUSCRIPCIÓN EN TIEMPO REAL CON SUPABASE REALTIME
   useEffect(() => {
     fetchData();
+
+    const channel = supabase
+      .channel("pos-realtime-changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "mesas" },
+        () => {
+          fetchData();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "pedidos" },
+        () => {
+          fetchData();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "pedido_items" },
+        () => {
+          fetchData();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const handleSelectMesa = async (mesa: Mesa) => {
@@ -247,6 +285,21 @@ export default function HomePOS() {
 
   const totalPagado = useMemo(() => pagos.reduce((acc, p) => acc + p.monto, 0), [pagos]);
   const saldoPendiente = useMemo(() => Math.max(0, finalTotal - totalPagado), [finalTotal, totalPagado]);
+
+  // EFECTO: Rellenar por defecto "monto a asignar" con el total o saldo pendiente
+  useEffect(() => {
+    if (showCheckout) {
+      setMontoIngresado(saldoPendiente > 0 ? saldoPendiente.toString() : "");
+    }
+  }, [showCheckout, saldoPendiente]);
+
+  // Función para Pago Exacto con un solo clic
+  const handlePagoExacto = () => {
+    setMontoIngresado(saldoPendiente.toString());
+    if (currentMetodo === "efectivo") {
+      setEfectivoRecibido(saldoPendiente.toString());
+    }
+  };
 
   const handleAgregarPago = () => {
     const monto = Number(montoIngresado);
@@ -370,7 +423,7 @@ export default function HomePOS() {
     if (!selectedMesa) return;
 
     if (saldoPendiente > 0) {
-      alert(`No se puede liberar la mesa. Aún hay un saldo pendiente de $${saldoPendiente.toLocaleString()}`);
+      alert(`No se puede liberar la mesa. Aún hay un saldo pendiente de $${formatCurrency(saldoPendiente)}`);
       return;
     }
 
@@ -515,7 +568,7 @@ export default function HomePOS() {
                                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                                   {it.cantidad}x {it.productos?.nombre}
                                 </span>
-                                <span className="font-mono text-[11px]">${(it.precio_unitario * it.cantidad).toLocaleString()}</span>
+                                <span className="font-mono text-[11px]">${formatCurrency(it.precio_unitario * it.cantidad)}</span>
                               </div>
                             ))}
                           </div>
@@ -534,7 +587,7 @@ export default function HomePOS() {
                                 <AlertCircle className="w-4 h-4 text-amber-400" />
                                 {it.cantidad}x {it.productos?.nombre}
                               </span>
-                              <span className="font-mono text-xs text-slate-400">${(it.precio_unitario * it.cantidad).toLocaleString()}</span>
+                              <span className="font-mono text-xs text-slate-400">${formatCurrency(it.precio_unitario * it.cantidad)}</span>
                             </div>
                           ))}
                         </div>
@@ -544,7 +597,7 @@ export default function HomePOS() {
                     <div className="pt-3 border-t border-slate-800 space-y-3">
                       <div className="flex justify-between items-center text-sm font-black">
                         <span className="text-slate-400">TOTAL COMANDA:</span>
-                        <span className="font-mono text-emerald-400 text-base">${p.total?.toLocaleString()}</span>
+                        <span className="font-mono text-emerald-400 text-base">${formatCurrency(p.total)}</span>
                       </div>
 
                       <button
@@ -578,50 +631,93 @@ export default function HomePOS() {
                     <div
                       key={mesa.id}
                       onClick={() => handleSelectMesa(mesa)}
-                      className={`group relative rounded-3xl p-5 border-2 transition-all cursor-pointer overflow-hidden flex flex-col justify-between h-64 sm:h-72 shadow-xl ${
+                      className={`group relative rounded-3xl p-5 border-2 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between h-64 sm:h-72 shadow-2xl ${
                         isLibre
-                          ? "bg-slate-900/80 border-emerald-500/30"
+                          ? "bg-slate-900/90 border-emerald-500/50 hover:border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)] hover:shadow-[0_0_25px_rgba(16,185,129,0.3)]"
                           : isPendServir
-                          ? "bg-amber-950/20 border-amber-400/60"
+                          ? "bg-amber-950/40 border-amber-500 shadow-[0_0_20px_rgba(245,158,11,0.25)] hover:shadow-[0_0_30px_rgba(245,158,11,0.4)]"
                           : isPreparado
-                          ? "bg-purple-950/30 border-purple-500 animate-pulse"
-                          : "bg-cyan-950/20 border-cyan-400/60"
+                          ? "bg-purple-950/50 border-purple-500 shadow-[0_0_30px_rgba(168,85,247,0.5)] animate-pulse hover:shadow-[0_0_40px_rgba(168,85,247,0.7)]"
+                          : "bg-cyan-950/40 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.25)] hover:shadow-[0_0_30px_rgba(6,182,212,0.4)]"
                       }`}
                     >
-                      <div className="flex justify-between items-center">
-                        <h3 className="font-black text-xl text-white">{mesa.nombre}</h3>
-                        <span className="text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-slate-800 text-slate-300">
+                      {/* HEADER TARJETA: NOMBRE MESA Y BADGE SVG CON COLOR SEGÚN ESTADO */}
+                      <div className="flex justify-between items-center z-10">
+                        <h3 className="font-black text-xl text-white tracking-wide">{mesa.nombre}</h3>
+                        <span className={`text-[10px] font-black px-2.5 py-1 rounded-full uppercase flex items-center gap-1 tracking-wider shadow-md ${
+                          isLibre
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                            : isPendServir
+                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                            : isPreparado
+                            ? "bg-purple-500/30 text-purple-200 border border-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.5)]"
+                            : "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                        }`}>
+                          {isLibre && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
+                          {isPendServir && <Clock className="w-3 h-3 text-amber-400" />}
+                          {isPreparado && <Sparkle className="w-3 h-3 text-purple-300 animate-spin" />}
+                          {isServido && <ChefHat className="w-3 h-3 text-cyan-400" />}
                           {mesa.estado.replace("_", " ")}
                         </span>
                       </div>
 
-                      <div className="flex-1 flex justify-center items-center my-1">
-                        <img src={isLibre ? "/mesa1.png" : "/mesa2.png"} alt={mesa.nombre} className="h-28 w-auto object-contain" />
+                      {/* CENTRO: MANTENEMOS TUS IMÁGENES DENTRO DEL DISEÑO MEJORADO */}
+                      <div className="flex-1 flex flex-col justify-center items-center my-1 relative z-0">
+                        <img 
+                          src={isLibre ? "/mesa1.png" : "/mesa2.png"} 
+                          alt={mesa.nombre} 
+                          className="h-20 sm:h-22 w-auto object-contain opacity-85 group-hover:scale-105 transition-transform duration-300" 
+                        />
+                        <span className={`text-xl sm:text-2xl font-black uppercase tracking-widest mt-1 drop-shadow-[0_2px_10px_rgba(0,0,0,0.8)] ${
+                          isLibre 
+                            ? "text-emerald-400" 
+                            : isPendServir 
+                            ? "text-amber-400" 
+                            : isPreparado 
+                            ? "text-purple-300 animate-bounce" 
+                            : "text-cyan-300"
+                        }`}>
+                          {isLibre ? "LIBRE" : isPendServir ? "COCINA" : isPreparado ? "PREPARADO" : "SERVIDO"}
+                        </span>
                       </div>
 
-                      <div className="pt-2 border-t border-slate-800/80">
+                      {/* PIE TARJETA: BOTONES ESTILIZADOS SVG POR ESTADO */}
+                      <div className="pt-2 border-t border-slate-800/80 z-10">
                         {vista === "caja" ? (
                           <button
-                            className={`w-full py-1.5 font-black text-xs rounded-xl border transition-all ${
+                            className={`w-full py-2 font-black text-xs uppercase rounded-xl border flex items-center justify-center gap-1.5 transition-all ${
                               isLibre
-                                ? "bg-slate-950 text-slate-500 border-slate-800 cursor-not-allowed"
-                                : "bg-pink-500/20 text-pink-300 border-pink-500/40 hover:bg-pink-500 hover:text-white"
+                                ? "bg-slate-950 text-slate-600 border-slate-800/80 cursor-not-allowed"
+                                : "bg-pink-500/20 text-pink-300 border-pink-500/50 hover:bg-pink-500 hover:text-white shadow-[0_0_15px_rgba(236,72,153,0.3)] active:scale-95 cursor-pointer"
                             }`}
                           >
-                            {isLibre ? "Disponible" : "💳 Cobrar"}
+                            <CreditCard className="w-3.5 h-3.5" />
+                            {isLibre ? "Disponible" : "Cobrar Mesa"}
                           </button>
                         ) : (
                           <div>
                             {isPreparado ? (
                               <button
                                 onClick={(e) => handleEntregarAMesa(mesa.id, e)}
-                                className="w-full py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black text-xs uppercase rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.5)] flex items-center justify-center gap-1.5"
+                                className="w-full py-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs uppercase rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.5)] flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
                               >
                                 <Send className="w-3.5 h-3.5" /> Entregar
                               </button>
                             ) : (
-                              <div className="text-[10px] font-black text-center text-slate-400 py-1">
-                                {isLibre ? "+ Tomar Pedido" : isServido ? "➕ Agregar Adición" : "Ver / Modificar Comanda"}
+                              <div className={`text-[11px] font-black uppercase text-center py-1.5 rounded-xl border flex items-center justify-center gap-1.5 transition-all ${
+                                isLibre 
+                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 group-hover:bg-emerald-500 group-hover:text-slate-950" 
+                                  : isServido 
+                                  ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30 group-hover:bg-cyan-500 group-hover:text-slate-950"
+                                  : "bg-amber-500/10 text-amber-300 border-amber-500/30 group-hover:bg-amber-500 group-hover:text-slate-950"
+                              }`}>
+                                {isLibre ? (
+                                  <><Plus className="w-3.5 h-3.5" /> Tomar Pedido</>
+                                ) : isServido ? (
+                                  <><Plus className="w-3.5 h-3.5" /> Agregar Adición</>
+                                ) : (
+                                  <><Receipt className="w-3.5 h-3.5" /> Ver / Modificar</>
+                                )}
                               </div>
                             )}
                           </div>
@@ -701,7 +797,7 @@ export default function HomePOS() {
                           <p className="text-[9px] font-mono text-slate-400 mt-0.5">Stock: {p.stock ?? 50}</p>
                         </div>
                         <div className="mt-3 pt-2 border-t border-slate-800/80 flex justify-between items-center">
-                          <span className="font-black text-xs sm:text-sm text-emerald-400 font-mono">${p.precio.toLocaleString()}</span>
+                          <span className="font-black text-xs sm:text-sm text-emerald-400 font-mono">${formatCurrency(p.precio)}</span>
                           {vista === "mesero" && (
                             <span className="w-6 h-6 rounded-lg bg-pink-500/20 text-pink-400 font-black flex items-center justify-center text-xs">+</span>
                           )}
@@ -721,7 +817,7 @@ export default function HomePOS() {
                   <div>
                     <span className="text-[10px] font-black uppercase text-pink-400 block">{selectedMesa.nombre}</span>
                     <div className="flex items-center gap-2">
-                      <span className="text-base font-black text-white font-mono">${subtotalAmount.toLocaleString()}</span>
+                      <span className="text-base font-black text-white font-mono">${formatCurrency(subtotalAmount)}</span>
                       <span className="text-[10px] text-slate-400">({cart.reduce((a, b) => a + b.cantidad, 0)} items)</span>
                     </div>
                   </div>
@@ -777,7 +873,7 @@ export default function HomePOS() {
                                 {item.producto.nombre}
                                 {item.es_adicion && <span className="text-[8px] bg-rose-500/20 text-rose-400 border border-rose-500/40 px-1 py-0.2 rounded font-bold">ADICIÓN</span>}
                               </h5>
-                              <p className="text-[10px] text-slate-400 font-mono">${item.producto.precio.toLocaleString()}</p>
+                              <p className="text-[10px] text-slate-400 font-mono">${formatCurrency(item.producto.precio)}</p>
                             </div>
                             {vista === "mesero" ? (
                               <div className="flex items-center gap-2">
@@ -797,7 +893,7 @@ export default function HomePOS() {
                   <div className="pt-3 border-t border-slate-800 space-y-3">
                     <div className="hidden lg:flex justify-between text-lg font-black text-white">
                       <span>TOTAL</span>
-                      <span className="font-mono text-emerald-400">${subtotalAmount.toLocaleString()}</span>
+                      <span className="font-mono text-emerald-400">${formatCurrency(subtotalAmount)}</span>
                     </div>
 
                     {vista === "mesero" ? (
@@ -845,7 +941,7 @@ export default function HomePOS() {
                         {cartIniciales.map((item) => (
                           <div key={item.producto.id} className="flex justify-between items-center text-xs font-bold text-slate-200 border-b border-slate-900/60 pb-1">
                             <span>{item.cantidad}x {item.producto.nombre}</span>
-                            <span className="font-mono text-slate-400">${(item.producto.precio * item.cantidad).toLocaleString()}</span>
+                            <span className="font-mono text-slate-400">${formatCurrency(item.producto.precio * item.cantidad)}</span>
                           </div>
                         ))}
                       </div>
@@ -861,7 +957,7 @@ export default function HomePOS() {
                         {cartAdiciones.map((item) => (
                           <div key={item.producto.id} className="flex justify-between items-center text-xs font-bold text-rose-200 border-b border-slate-900/60 pb-1">
                             <span>{item.cantidad}x {item.producto.nombre}</span>
-                            <span className="font-mono text-rose-300">${(item.producto.precio * item.cantidad).toLocaleString()}</span>
+                            <span className="font-mono text-rose-300">${formatCurrency(item.producto.precio * item.cantidad)}</span>
                           </div>
                         ))}
                       </div>
@@ -896,25 +992,35 @@ export default function HomePOS() {
                 <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-1.5">
                   <div className="flex justify-between text-xs font-bold text-slate-400">
                     <span>Subtotal:</span>
-                    <span className="font-mono">${subtotalAmount.toLocaleString()}</span>
+                    <span className="font-mono">${formatCurrency(subtotalAmount)}</span>
                   </div>
                   {discountVal > 0 && (
                     <div className="flex justify-between text-xs font-bold text-rose-400">
                       <span>Descuento aplicado:</span>
-                      <span className="font-mono">-${discountVal.toLocaleString()}</span>
+                      <span className="font-mono">-${formatCurrency(discountVal)}</span>
                     </div>
                   )}
                   <div className="flex justify-between text-xl font-black text-emerald-400 pt-2 border-t border-slate-800">
                     <span>TOTAL FINAL:</span>
-                    <span className="font-mono">${finalTotal.toLocaleString()}</span>
+                    <span className="font-mono">${formatCurrency(finalTotal)}</span>
                   </div>
                 </div>
 
                 {/* SECCIÓN CAJA INTELIGENTE */}
                 <div className="bg-slate-950 p-4 rounded-2xl border border-pink-500/30 mb-4 space-y-3">
-                  <h4 className="text-xs font-black text-pink-300 uppercase tracking-wider flex items-center gap-1.5">
-                    <Wallet className="w-4 h-4 text-pink-400" /> Registrar Forma de Pago
-                  </h4>
+                  <div className="flex justify-between items-center">
+                    <h4 className="text-xs font-black text-pink-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Wallet className="w-4 h-4 text-pink-400" /> Registrar Forma de Pago
+                    </h4>
+
+                    {/* BOTÓN PAGO EXACTO RÁPIDO */}
+                    <button
+                      onClick={handlePagoExacto}
+                      className="px-2.5 py-1 bg-emerald-500/20 border border-emerald-500/50 hover:bg-emerald-500 hover:text-slate-950 text-emerald-300 text-[10px] font-black uppercase rounded-lg transition-all flex items-center gap-1 cursor-pointer active:scale-95"
+                    >
+                      <Zap className="w-3 h-3 text-emerald-400 group-hover:text-slate-950" /> Pago Exacto
+                    </button>
+                  </div>
 
                   <div className="grid grid-cols-5 gap-1.5">
                     {(["efectivo", "nequi", "daviplata", "tarjeta", "fiado"] as const).map((m) => (
@@ -954,6 +1060,27 @@ export default function HomePOS() {
                           onChange={(e) => setEfectivoRecibido(e.target.value)}
                           className="w-full px-3 py-2 bg-slate-900 border border-amber-500/40 rounded-xl text-xs font-bold text-amber-300 focus:outline-none"
                         />
+                        
+                        {/* ATAJOS DE BILLETES EN EFECTIVO */}
+                        <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+                          {[10000, 20000, 50000, 100000].map((val) => (
+                            <button
+                              key={val}
+                              type="button"
+                              onClick={() => setEfectivoRecibido(val.toString())}
+                              className="px-1.5 py-0.5 bg-amber-500/10 hover:bg-amber-500 hover:text-slate-950 text-amber-400 border border-amber-500/30 rounded text-[9px] font-mono font-bold transition-all cursor-pointer"
+                            >
+                              ${formatCurrency(val / 1000)}k
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setEfectivoRecibido(montoIngresado || saldoPendiente.toString())}
+                            className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] font-bold transition-all cursor-pointer"
+                          >
+                            Exacto
+                          </button>
+                        </div>
                       </div>
                     )}
 
@@ -975,16 +1102,17 @@ export default function HomePOS() {
                     <div className="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-xl flex justify-between items-center text-xs font-black text-amber-300">
                       <span>Devuelta / Cambio:</span>
                       <span className="font-mono text-sm">
-                        ${Math.max(0, Number(efectivoRecibido) - Number(montoIngresado)).toLocaleString()}
+                        ${formatCurrency(Math.max(0, Number(efectivoRecibido) - Number(montoIngresado)))}
                       </span>
                     </div>
                   )}
 
+                  {/* BOTÓN AHORA CON MUCHO MÁS CONTRASTE Y VISIBILIDAD */}
                   <button
                     onClick={handleAgregarPago}
-                    className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white font-black text-xs uppercase rounded-xl border border-slate-700 transition-all cursor-pointer"
+                    className="w-full py-2.5 bg-pink-600 hover:bg-pink-500 text-white font-black text-xs uppercase rounded-xl border border-pink-400 shadow-[0_0_15px_rgba(236,72,153,0.4)] transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1.5"
                   >
-                    + Agregar Pago
+                    <Plus className="w-4 h-4" /> Agregar Pago
                   </button>
                 </div>
 
@@ -995,10 +1123,10 @@ export default function HomePOS() {
                     {pagos.map((p, idx) => (
                       <div key={idx} className="flex justify-between items-center text-xs font-bold bg-slate-900 p-2 rounded-xl border border-slate-800">
                         <div>
-                          <span className="uppercase text-pink-400">{p.metodo}</span>: ${p.monto.toLocaleString()}
+                          <span className="uppercase text-pink-400">{p.metodo}</span>: ${formatCurrency(p.monto)}
                           {p.cambioEfectivo !== undefined && (
                             <span className="text-[10px] text-amber-300 block">
-                              Recibido: ${p.montoEntregadoEfectivo?.toLocaleString()} | Cambio: ${p.cambioEfectivo.toLocaleString()}
+                              Recibido: ${formatCurrency(p.montoEntregadoEfectivo)} | Cambio: ${formatCurrency(p.cambioEfectivo)}
                             </span>
                           )}
                           {p.clienteFiado && (
@@ -1020,7 +1148,7 @@ export default function HomePOS() {
                       <span className="flex items-center gap-1">
                         <AlertCircle className="w-4 h-4" /> SALDO PENDIENTE / DEUDA:
                       </span>
-                      <span className="font-mono text-sm">${saldoPendiente.toLocaleString()}</span>
+                      <span className="font-mono text-sm">${formatCurrency(saldoPendiente)}</span>
                     </div>
                   ) : (
                     <div className="p-3 bg-emerald-500/10 border border-emerald-500/40 rounded-2xl flex items-center justify-between text-xs font-black text-emerald-400">
