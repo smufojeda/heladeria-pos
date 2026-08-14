@@ -13,14 +13,18 @@ import {
   X,
   Plus,
   Minus,
-  ChevronUp,
-  CheckCircle2,
   ChefHat,
   LayoutGrid,
   Check,
   Clock,
   ShieldCheck,
   Tag,
+  CheckCircle2,
+  AlertCircle,
+  Send,
+  Trash2,
+  BookOpenCheck,
+  User,
 } from "lucide-react";
 
 type EstadoMesa = "libre" | "pendiente_servir" | "preparado" | "servido" | "pendiente_pago";
@@ -56,12 +60,14 @@ interface PedidoCocina {
   mesa_id: number;
   created_at: string;
   estado_pedido: string;
+  total: number;
   mesas: { nombre: string; numero: number };
   pedido_items: {
     id: number;
     cantidad: number;
     notas: string;
     es_adicion: boolean;
+    precio_unitario: number;
     productos: { nombre: string };
   }[];
 }
@@ -79,14 +85,11 @@ export default function HomePOS() {
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [initialItemsCount, setInitialItemsCount] = useState<number>(0);
-  const [activePedidoId, setActivePedidoId] = useState<number | null>(null);
-
-  const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
 
   // Modal Caja
   const [showCheckout, setShowCheckout] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<"efectivo" | "nequi" | "tarjeta">("efectivo");
-  const [cashReceived, setCashReceived] = useState<string>("");
+  const [paymentMethod, setPaymentMethod] = useState<"efectivo" | "nequi" | "daviplata" | "tarjeta" | "fiado">("efectivo");
+  const [clienteFiado, setClienteFiado] = useState<string>("");
   const [discountInput, setDiscountInput] = useState<string>("0");
   const [discountType, setDiscountType] = useState<"monto" | "porcentaje">("monto");
   const [saleCompleted, setSaleCompleted] = useState<boolean>(false);
@@ -97,7 +100,17 @@ export default function HomePOS() {
       const { data: mesasData } = await supabase.from("mesas").select("*").order("numero", { ascending: true });
       const { data: prodData } = await supabase.from("productos").select("*").order("id", { ascending: true });
 
-      if (mesasData && mesasData.length > 0) setMesas(mesasData as Mesa[]);
+      if (mesasData && mesasData.length > 0) {
+        const formattedMesas = mesasData.map((m, idx) => {
+          let customName = m.nombre;
+          if (idx < 5) customName = `Mesa ${idx + 1}`;
+          else if (idx === 5) customName = "Barra 1";
+          else if (idx === 6) customName = "Barra 2";
+
+          return { ...m, nombre: customName };
+        });
+        setMesas(formattedMesas as Mesa[]);
+      }
       if (prodData && prodData.length > 0) setProductos(prodData);
 
       fetchPedidosCocina();
@@ -105,12 +118,13 @@ export default function HomePOS() {
     setLoading(false);
   };
 
+  // FIX: Cocina únicamente consulta lo que esté explícitamente PENDIENTE DE SERVIR
   const fetchPedidosCocina = async () => {
     const { data } = await supabase
       .from("pedidos")
       .select("*, mesas!inner(nombre, numero, estado), pedido_items(*, productos(nombre))")
       .eq("estado", "abierto")
-      .eq("mesas.estado", "pendiente_servir")
+      .eq("estado_pedido", "pendiente_servir")
       .order("id", { ascending: true });
 
     if (data) setPedidosCocina(data as any);
@@ -123,13 +137,10 @@ export default function HomePOS() {
   const handleSelectMesa = async (mesa: Mesa) => {
     setSelectedMesa(mesa);
     setCart([]);
-    setActivePedidoId(null);
     setInitialItemsCount(0);
     setShowCheckout(false);
     setSaleCompleted(false);
-    setDiscountInput("0");
-    setCashReceived("");
-    setIsMobileCartOpen(false);
+    setClienteFiado("");
 
     const { data: pedido } = await supabase
       .from("pedidos")
@@ -139,7 +150,6 @@ export default function HomePOS() {
       .single();
 
     if (pedido) {
-      setActivePedidoId(pedido.id);
       const { data: items } = await supabase
         .from("pedido_items")
         .select("*, productos(*)")
@@ -164,12 +174,15 @@ export default function HomePOS() {
 
   const addToCart = (producto: Producto) => {
     setCart((prev) => {
-      const existing = prev.find((item) => item.producto.id === producto.id);
       const isAdicion = initialItemsCount > 0;
+      const existing = prev.find(
+        (item) => item.producto.id === producto.id && item.es_adicion === isAdicion
+      );
+
       if (existing) {
         return prev.map((item) =>
-          item.producto.id === producto.id
-            ? { ...item, cantidad: item.cantidad + 1, es_adicion: item.es_adicion || isAdicion }
+          item.producto.id === producto.id && item.es_adicion === isAdicion
+            ? { ...item, cantidad: item.cantidad + 1 }
             : item
         );
       }
@@ -177,11 +190,11 @@ export default function HomePOS() {
     });
   };
 
-  const updateQuantity = (productoId: number, delta: number) => {
+  const updateQuantity = (productoId: number, delta: number, esAdicion: boolean = false) => {
     setCart((prev) =>
       prev
         .map((item) => {
-          if (item.producto.id === productoId) {
+          if (item.producto.id === productoId && item.es_adicion === esAdicion) {
             const newQty = item.cantidad + delta;
             return newQty > 0 ? { ...item, cantidad: newQty } : null;
           }
@@ -195,10 +208,7 @@ export default function HomePOS() {
 
   const discountVal = useMemo(() => {
     const val = Number(discountInput) || 0;
-    if (discountType === "porcentaje") {
-      return (subtotalAmount * val) / 100;
-    }
-    return val;
+    return discountType === "porcentaje" ? (subtotalAmount * val) / 100 : val;
   }, [discountInput, discountType, subtotalAmount]);
 
   const finalTotal = useMemo(() => Math.max(0, subtotalAmount - discountVal), [subtotalAmount, discountVal]);
@@ -236,16 +246,32 @@ export default function HomePOS() {
         es_adicion: item.es_adicion || false,
       }));
       await supabase.from("pedido_items").insert(itemsToInsert);
+
+      const adicionesItems = cart.filter((i) => i.es_adicion || initialItemsCount === 0);
+      for (const item of adicionesItems) {
+        const { error: rpcError } = await supabase.rpc("descontar_stock", {
+          p_id: item.producto.id,
+          p_cantidad: item.cantidad,
+        });
+
+        if (rpcError) {
+          const { data: prodData } = await supabase.from("productos").select("stock").eq("id", item.producto.id).single();
+          if (prodData) {
+            const newStock = Math.max(0, (prodData.stock ?? 50) - item.cantidad);
+            await supabase.from("productos").update({ stock: newStock, disponible: newStock > 0 }).eq("id", item.producto.id);
+          }
+        }
+      }
     }
 
     fetchData();
     setSelectedMesa(null);
-    setIsMobileCartOpen(false);
   };
 
-  const handleCambiarEstadoMesa = async (mesaId: number, nuevoEstado: EstadoMesa, e: React.MouseEvent) => {
+  const handleEntregarAMesa = async (mesaId: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    await supabase.from("mesas").update({ estado: nuevoEstado }).eq("id", mesaId);
+    await supabase.from("mesas").update({ estado: "servido" }).eq("id", mesaId);
+    await supabase.from("pedidos").update({ estado_pedido: "servido" }).eq("mesa_id", mesaId).eq("estado", "abierto");
     fetchData();
   };
 
@@ -255,9 +281,22 @@ export default function HomePOS() {
     fetchData();
   };
 
-  // FINALIZAR VENTA CON DESCUENTO DE STOCK
+  const handleCancelarComanda = async (pedidoId: number, mesaId: number) => {
+    if (confirm("¿Estás seguro de eliminar/cancelar esta comanda? La mesa quedará libre.")) {
+      await supabase.from("pedido_items").delete().eq("pedido_id", pedidoId);
+      await supabase.from("pedidos").delete().eq("id", pedidoId);
+      await supabase.from("mesas").update({ estado: "libre" }).eq("id", mesaId);
+      fetchData();
+    }
+  };
+
   const handleFinalizeSale = async () => {
     if (!selectedMesa) return;
+
+    if (paymentMethod === "fiado" && !clienteFiado.trim()) {
+      alert("Por favor ingresa el nombre de la persona a la que le vas a fiar.");
+      return;
+    }
 
     const itemsSummary = cart.map((i) => ({
       nombre: i.producto.nombre,
@@ -265,45 +304,17 @@ export default function HomePOS() {
       precio: i.producto.precio,
     }));
 
-    // 1. Registrar la venta en la tabla ventas
     await supabase.from("ventas").insert({
       mesa_id: selectedMesa.id,
       numero_mesa: selectedMesa.numero,
       metodo_pago: paymentMethod,
+      cliente_nombre: paymentMethod === "fiado" ? clienteFiado.trim() : null,
       subtotal: subtotalAmount,
       descuento: discountVal,
       total: finalTotal,
       items_detalle: itemsSummary,
     });
 
-    // 2. DESCONTAR EL STOCK DE CADA PRODUCTO VENDIDO
-    for (const item of cart) {
-      // Intenta usar la función RPC rápida si la ejecutaste en SQL
-      const { error: rpcError } = await supabase.rpc("descontar_stock", {
-        p_id: item.producto.id,
-        p_cantidad: item.cantidad,
-      });
-
-      // Fallback manual en caso de no tener la RPC creada
-      if (rpcError) {
-        const { data: prodData } = await supabase
-          .from("productos")
-          .select("stock")
-          .eq("id", item.producto.id)
-          .single();
-
-        if (prodData) {
-          const currentStock = prodData.stock ?? 50;
-          const newStock = Math.max(0, currentStock - item.cantidad);
-          await supabase
-            .from("productos")
-            .update({ stock: newStock, disponible: newStock > 0 })
-            .eq("id", item.producto.id);
-        }
-      }
-    }
-
-    // 3. Cerrar comanda y liberar mesa
     await supabase.from("pedidos").update({ estado: "pagado", estado_pedido: "servido" }).eq("mesa_id", selectedMesa.id).eq("estado", "abierto");
     await supabase.from("mesas").update({ estado: "libre" }).eq("id", selectedMesa.id);
 
@@ -311,16 +322,18 @@ export default function HomePOS() {
     fetchData();
   };
 
-  const categories = ["Todos", "Helados", "Especiales", "Toppings", "Bebidas"];
   const filteredProducts = productos.filter((p) => {
     const matchesCat = selectedCategory === "Todos" || p.categoria === selectedCategory;
     const matchesSearch = p.nombre.toLowerCase().includes(searchQuery.toLowerCase());
     return matchesCat && matchesSearch;
   });
 
+  const cartIniciales = useMemo(() => cart.filter((i) => !i.es_adicion), [cart]);
+  const cartAdiciones = useMemo(() => cart.filter((i) => i.es_adicion), [cart]);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased flex flex-col selection:bg-pink-500 selection:text-white">
-      {/* HEADER PRINCIPAL */}
+      {/* HEADER */}
       <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-pink-500/30 px-4 sm:px-8 py-3.5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-2xl">
         <div className="flex items-center gap-3">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-pink-500 to-purple-600 p-1 flex items-center justify-center text-white shadow-[0_0_20px_rgba(236,72,153,0.5)]">
@@ -336,7 +349,6 @@ export default function HomePOS() {
           </div>
         </div>
 
-        {/* CONTROLES DE VISTA + BOTÓN ADMIN */}
         <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800/90 w-full md:w-auto justify-center flex-wrap">
           <button
             onClick={() => { setVista("caja"); setSelectedMesa(null); }}
@@ -363,7 +375,9 @@ export default function HomePOS() {
             }`}
           >
             <ChefHat className="w-4 h-4" /> COCINA
-            {pedidosCocina.length > 0 && <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping absolute -top-1 -right-1" />}
+            {pedidosCocina.length > 0 && (
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping absolute -top-1 -right-1" />
+            )}
           </button>
 
           <Link
@@ -379,46 +393,91 @@ export default function HomePOS() {
       {vista === "cocina" && (
         <main className="flex-1 p-4 sm:p-8 max-w-7xl mx-auto w-full">
           <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2 mb-6">
-            <ChefHat className="w-7 h-7 text-amber-400" /> Pedidos por Preparar ({pedidosCocina.length})
+            <ChefHat className="w-7 h-7 text-amber-400" /> Pedidos de Cocina ({pedidosCocina.length})
           </h2>
 
           {pedidosCocina.length === 0 ? (
             <div className="text-center py-20 text-slate-500 font-bold bg-slate-900/40 rounded-3xl border border-slate-800 p-8">
-              🍳 No hay comandas pendientes.
+              🍳 No hay comandas pendientes en cocina.
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-              {pedidosCocina.map((p) => (
-                <div key={p.id} className="bg-slate-900 border-2 border-amber-500/60 p-6 rounded-3xl flex flex-col justify-between shadow-2xl">
-                  <div>
-                    <div className="flex justify-between items-center pb-3 border-b border-slate-800">
-                      <h3 className="font-black text-xl text-white">{p.mesas?.nombre || `Mesa ${p.mesa_id}`}</h3>
-                      <span className="text-xs font-mono text-slate-400 flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-lg">
-                        <Clock className="w-3.5 h-3.5 text-amber-400" /> {new Date(p.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
+              {pedidosCocina.map((p) => {
+                const entredados = p.pedido_items?.filter((i) => !i.es_adicion) || [];
+                const adiciones = p.pedido_items?.filter((i) => i.es_adicion) || [];
+
+                return (
+                  <div key={p.id} className="bg-slate-900 border-2 border-amber-500/60 p-6 rounded-3xl flex flex-col justify-between shadow-2xl relative">
+                    <div>
+                      <div className="flex justify-between items-center pb-3 border-b border-slate-800 pr-8">
+                        <h3 className="font-black text-xl text-white">{p.mesas?.nombre || `Espacio ${p.mesa_id}`}</h3>
+                        <span className="text-xs font-mono text-slate-400 flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-lg">
+                          <Clock className="w-3.5 h-3.5 text-amber-400" />
+                          {new Date(p.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={() => handleCancelarComanda(p.id, p.mesa_id)}
+                        className="absolute top-5 right-5 p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white border border-rose-500/30 transition-all cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+
+                      <div className="my-5 space-y-4">
+                        {entredados.length > 0 && adiciones.length > 0 && (
+                          <div className="space-y-2">
+                            <span className="text-[10px] font-black uppercase text-emerald-400 block tracking-wider">
+                              ✅ Productos ya entregados:
+                            </span>
+                            {entredados.map((it) => (
+                              <div key={it.id} className="flex justify-between items-center text-xs font-bold p-2.5 rounded-xl border bg-emerald-950/20 border-emerald-500/40 text-emerald-300 opacity-70">
+                                <span className="flex items-center gap-1.5">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                  {it.cantidad}x {it.productos?.nombre}
+                                </span>
+                                <span className="font-mono text-[11px]">${(it.precio_unitario * it.cantidad).toLocaleString()}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="space-y-2">
+                          {adiciones.length > 0 && (
+                            <span className="text-[10px] font-black uppercase text-rose-400 block tracking-wider">
+                              🚨 Productos a añadir:
+                            </span>
+                          )}
+
+                          {(adiciones.length > 0 ? adiciones : p.pedido_items)?.map((it) => (
+                            <div key={it.id} className="flex justify-between items-center text-sm font-bold p-3 rounded-xl border bg-slate-950/80 border-slate-800 text-slate-200 shadow-md">
+                              <span className="flex items-center gap-2">
+                                <AlertCircle className="w-4 h-4 text-amber-400" />
+                                {it.cantidad}x {it.productos?.nombre}
+                              </span>
+                              <span className="font-mono text-xs text-slate-400">${(it.precio_unitario * it.cantidad).toLocaleString()}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="my-5 space-y-3">
-                      {p.pedido_items?.map((it) => (
-                        <div key={it.id} className={`flex justify-between items-center text-sm font-bold p-3 rounded-xl border ${it.es_adicion ? "bg-rose-950/40 border-rose-500/80 text-rose-200" : "bg-slate-950/60 border-slate-800 text-slate-100"}`}>
-                          <span className="flex items-center gap-2">
-                            {it.cantidad}x {it.productos?.nombre}
-                            {it.es_adicion && <span className="bg-rose-500 text-white text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider animate-pulse">🚨 ADICIÓN</span>}
-                          </span>
-                          {it.notas && <span className="text-amber-400 italic text-xs">({it.notas})</span>}
-                        </div>
-                      ))}
+                    <div className="pt-3 border-t border-slate-800 space-y-3">
+                      <div className="flex justify-between items-center text-sm font-black">
+                        <span className="text-slate-400">TOTAL COMANDA:</span>
+                        <span className="font-mono text-emerald-400 text-base">${p.total?.toLocaleString()}</span>
+                      </div>
+
+                      <button
+                        onClick={() => handleCocinaListo(p.id, p.mesa_id)}
+                        className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-sm uppercase rounded-2xl cursor-pointer flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.4)] transition-all active:scale-95"
+                      >
+                        <Check className="w-5 h-5" /> LISTO
+                      </button>
                     </div>
                   </div>
-
-                  <button
-                    onClick={() => handleCocinaListo(p.id, p.mesa_id)}
-                    className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs sm:text-sm uppercase rounded-2xl cursor-pointer flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(245,158,11,0.4)]"
-                  >
-                    <Check className="w-5 h-5" /> Marcar Listo
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </main>
@@ -435,14 +494,19 @@ export default function HomePOS() {
                   const isPendServir = mesa.estado === "pendiente_servir";
                   const isPreparado = mesa.estado === "preparado";
                   const isServido = mesa.estado === "servido";
-                  const isPendPago = mesa.estado === "pendiente_pago";
 
                   return (
                     <div
                       key={mesa.id}
                       onClick={() => handleSelectMesa(mesa)}
                       className={`group relative rounded-3xl p-5 border-2 transition-all cursor-pointer overflow-hidden flex flex-col justify-between h-64 sm:h-72 shadow-xl ${
-                        isLibre ? "bg-slate-900/80 border-emerald-500/30" : isPendServir ? "bg-amber-950/20 border-amber-400/60" : isPreparado ? "bg-purple-950/30 border-purple-500" : isServido ? "bg-cyan-950/20 border-cyan-400/60" : "bg-rose-950/20 border-rose-500/60"
+                        isLibre
+                          ? "bg-slate-900/80 border-emerald-500/30"
+                          : isPendServir
+                          ? "bg-amber-950/20 border-amber-400/60"
+                          : isPreparado
+                          ? "bg-purple-950/30 border-purple-500 animate-pulse"
+                          : "bg-cyan-950/20 border-cyan-400/60"
                       }`}
                     >
                       <div className="flex justify-between items-center">
@@ -459,11 +523,22 @@ export default function HomePOS() {
                       <div className="pt-2 border-t border-slate-800/80">
                         {vista === "caja" ? (
                           <button className="w-full py-1.5 bg-pink-500/20 text-pink-300 border border-pink-500/40 font-black text-xs rounded-xl">
-                            {isLibre ? "Mesa Libre" : "💳 Cobrar Mesa"}
+                            {isLibre ? "Disponible" : "💳 Cobrar"}
                           </button>
                         ) : (
-                          <div className="text-[10px] font-black text-center text-slate-400 py-1">
-                            {isLibre ? "+ Tomar Pedido" : "Ver / Modificar Comanda"}
+                          <div>
+                            {isPreparado ? (
+                              <button
+                                onClick={(e) => handleEntregarAMesa(mesa.id, e)}
+                                className="w-full py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black text-xs uppercase rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.5)] flex items-center justify-center gap-1.5"
+                              >
+                                <Send className="w-3.5 h-3.5" /> Entregar
+                              </button>
+                            ) : (
+                              <div className="text-[10px] font-black text-center text-slate-400 py-1">
+                                {isLibre ? "+ Tomar Pedido" : isServido ? "➕ Agregar Adición" : "Ver / Modificar Comanda"}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -473,12 +548,11 @@ export default function HomePOS() {
               </div>
             </main>
           ) : (
-            /* COMANDA INTERACTIVA */
             <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
               <div className="flex-1 p-4 sm:p-6 overflow-y-auto space-y-4 pb-32 lg:pb-6">
                 <div className="flex items-center justify-between gap-3">
                   <button onClick={() => setSelectedMesa(null)} className="px-4 py-2 bg-slate-900 border border-slate-800 rounded-2xl text-xs font-black text-slate-300 flex items-center gap-2 cursor-pointer">
-                    <ArrowLeft className="w-4 h-4 text-pink-400" /> Volver a Mesas
+                    <ArrowLeft className="w-4 h-4 text-pink-400" /> Volver a Mesas/Barras
                   </button>
                   <input
                     type="text"
@@ -506,15 +580,14 @@ export default function HomePOS() {
                 </div>
               </div>
 
-              {/* PANEL DIRECCIONAL COMANDA */}
               <div className="w-full lg:w-96 bg-slate-900/95 border-t lg:border-l border-slate-800 p-5 flex flex-col justify-between shadow-2xl">
                 <div>
                   <h2 className="font-black text-lg text-white flex items-center gap-2 pb-3 border-b border-slate-800">
                     <Receipt className="w-5 h-5 text-pink-400" /> {selectedMesa.nombre}
                   </h2>
                   <div className="my-4 space-y-3 max-h-[50vh] overflow-y-auto pr-1">
-                    {cart.map((item) => (
-                      <div key={item.producto.id} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex items-center justify-between">
+                    {cart.map((item, idx) => (
+                      <div key={`${item.producto.id}-${item.es_adicion ? "adicion" : "normal"}-${idx}`} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex items-center justify-between">
                         <div>
                           <h5 className="font-black text-xs text-slate-100 flex items-center gap-1.5">
                             {item.producto.nombre}
@@ -523,9 +596,9 @@ export default function HomePOS() {
                           <p className="text-[11px] text-slate-400 font-mono">${item.producto.precio.toLocaleString()}</p>
                         </div>
                         <div className="flex items-center gap-2">
-                          <button onClick={() => updateQuantity(item.producto.id, -1)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black"><Minus className="w-3 h-3" /></button>
+                          <button onClick={() => updateQuantity(item.producto.id, -1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black"><Minus className="w-3 h-3" /></button>
                           <span className="font-black text-xs text-white">{item.cantidad}</span>
-                          <button onClick={() => updateQuantity(item.producto.id, 1)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black"><Plus className="w-3 h-3" /></button>
+                          <button onClick={() => updateQuantity(item.producto.id, 1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black"><Plus className="w-3 h-3" /></button>
                         </div>
                       </div>
                     ))}
@@ -537,7 +610,7 @@ export default function HomePOS() {
                     <span>TOTAL</span>
                     <span className="font-mono text-emerald-400">${subtotalAmount.toLocaleString()}</span>
                   </div>
-                  <button onClick={handleSaveOrder} disabled={cart.length === 0} className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase rounded-2xl shadow flex items-center justify-center gap-2">
+                  <button onClick={handleSaveOrder} disabled={cart.length === 0} className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase rounded-2xl shadow flex items-center justify-center gap-2 cursor-pointer active:scale-95">
                     <ChefHat className="w-5 h-5" /> Enviar a Cocina
                   </button>
                 </div>
@@ -547,74 +620,57 @@ export default function HomePOS() {
         </>
       )}
 
-      {/* MODAL COBRO EN CAJA CON DESGLOSE Y DESCUENTOS */}
+      {/* MODAL COBRO EN CAJA */}
       {showCheckout && selectedMesa && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-lg w-full shadow-2xl relative max-h-[90vh] overflow-y-auto">
             {!saleCompleted ? (
               <>
                 <div className="flex justify-between items-center mb-4 pb-3 border-b border-slate-800">
-                  <h3 className="font-black text-lg text-white flex items-center gap-2">
-                    💳 Cobrar - {selectedMesa.nombre}
-                  </h3>
+                  <h3 className="font-black text-lg text-white flex items-center gap-2">💳 Cobrar - {selectedMesa.nombre}</h3>
                   <button onClick={() => setShowCheckout(false)} className="w-8 h-8 rounded-xl bg-slate-800 text-slate-400 flex items-center justify-center">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
 
-                {/* DESGLOSE DE CONSUMO */}
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4">
-                  <h4 className="text-xs font-black text-slate-400 uppercase mb-2">Resumen de Productos Consumidos:</h4>
-                  <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
-                    {cart.map((item) => (
-                      <div key={item.producto.id} className="flex justify-between items-center text-xs font-bold text-slate-200 border-b border-slate-900 pb-1">
-                        <span>{item.cantidad}x {item.producto.nombre}</span>
-                        <span className="font-mono text-slate-400">${(item.producto.precio * item.cantidad).toLocaleString()}</span>
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-3 max-h-48 overflow-y-auto pr-1">
+                  {cartIniciales.length > 0 && (
+                    <div>
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase mb-1.5 flex items-center gap-1">
+                        🛒 Productos Pedidos:
+                      </h4>
+                      <div className="space-y-1">
+                        {cartIniciales.map((item) => (
+                          <div key={item.producto.id} className="flex justify-between items-center text-xs font-bold text-slate-200 border-b border-slate-900/60 pb-1">
+                            <span>{item.cantidad}x {item.producto.nombre}</span>
+                            <span className="font-mono text-slate-400">${(item.producto.precio * item.cantidad).toLocaleString()}</span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* APLICAR DESCUENTO */}
-                <div className="bg-slate-950/60 p-3.5 rounded-2xl border border-slate-800 mb-4 space-y-2">
-                  <div className="flex justify-between items-center">
-                    <label className="text-xs font-black text-pink-400 flex items-center gap-1.5 uppercase">
-                      <Tag className="w-3.5 h-3.5" /> Aplicar Descuento
-                    </label>
-                    <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800">
-                      <button
-                        onClick={() => setDiscountType("monto")}
-                        className={`px-2 py-0.5 rounded-lg text-[10px] font-black ${discountType === "monto" ? "bg-pink-500 text-white" : "text-slate-400"}`}
-                      >
-                        Monto ($)
-                      </button>
-                      <button
-                        onClick={() => setDiscountType("porcentaje")}
-                        className={`px-2 py-0.5 rounded-lg text-[10px] font-black ${discountType === "porcentaje" ? "bg-pink-500 text-white" : "text-slate-400"}`}
-                      >
-                        Porcentaje (%)
-                      </button>
                     </div>
-                  </div>
+                  )}
 
-                  <input
-                    type="number"
-                    value={discountInput}
-                    onChange={(e) => setDiscountInput(e.target.value)}
-                    placeholder="Ej: 2000 o 10"
-                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-black text-white font-mono focus:outline-none focus:border-pink-500"
-                  />
+                  {cartAdiciones.length > 0 && (
+                    <div className="pt-2 border-t border-slate-900">
+                      <h4 className="text-[10px] font-black text-rose-400 uppercase mb-1.5 flex items-center gap-1">
+                        ➕ Productos Añadidos Después:
+                      </h4>
+                      <div className="space-y-1">
+                        {cartAdiciones.map((item) => (
+                          <div key={item.producto.id} className="flex justify-between items-center text-xs font-bold text-rose-200 border-b border-slate-900/60 pb-1">
+                            <span>{item.cantidad}x {item.producto.nombre}</span>
+                            <span className="font-mono text-rose-300">${(item.producto.precio * item.cantidad).toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {/* TOTALES FINALIZADOS */}
                 <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-1.5">
                   <div className="flex justify-between text-xs font-bold text-slate-400">
                     <span>Subtotal:</span>
                     <span className="font-mono">${subtotalAmount.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between text-xs font-bold text-rose-400">
-                    <span>Descuento aplicado:</span>
-                    <span className="font-mono">-${discountVal.toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between text-xl font-black text-emerald-400 pt-2 border-t border-slate-800">
                     <span>TOTAL FINAL:</span>
@@ -622,56 +678,64 @@ export default function HomePOS() {
                   </div>
                 </div>
 
-                {/* MÉTODOS DE PAGO Y CAMBIO */}
-                <div className="space-y-3 mb-5">
-                  <div className="grid grid-cols-3 gap-2">
-                    {(["efectivo", "nequi", "tarjeta"] as const).map((m) => (
+                {/* BOTONES DE MÉTODO DE PAGO */}
+                <div className="space-y-3 mb-4">
+                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                    {(["efectivo", "nequi", "daviplata", "tarjeta", "fiado"] as const).map((m) => (
                       <button
                         key={m}
                         onClick={() => setPaymentMethod(m)}
-                        className={`py-2 rounded-xl text-xs font-black uppercase transition-all border ${
-                          paymentMethod === m ? "bg-pink-500 text-white border-pink-400" : "bg-slate-950 text-slate-400 border-slate-800"
+                        className={`py-2 rounded-xl text-[10px] font-black uppercase transition-all border flex flex-col items-center justify-center gap-1 cursor-pointer ${
+                          paymentMethod === m
+                            ? m === "fiado"
+                              ? "bg-amber-500 text-slate-950 border-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.5)]"
+                              : "bg-pink-500 text-white border-pink-400 shadow-[0_0_10px_rgba(236,72,153,0.4)]"
+                            : "bg-slate-950 text-slate-400 border-slate-800"
                         }`}
                       >
+                        {m === "fiado" && <BookOpenCheck className="w-3.5 h-3.5" />}
                         {m}
                       </button>
                     ))}
                   </div>
 
-                  {paymentMethod === "efectivo" && (
-                    <div className="space-y-1">
+                  {paymentMethod === "fiado" && (
+                    <div className="bg-amber-950/30 border border-amber-500/50 p-3 rounded-2xl space-y-1.5 animate-fadeIn">
+                      <label className="text-[11px] font-black text-amber-300 flex items-center gap-1.5">
+                        <User className="w-3.5 h-3.5 text-amber-400" /> Nombre del Cliente a Fiar:
+                      </label>
                       <input
-                        type="number"
-                        placeholder="Monto recibido en efectivo..."
-                        value={cashReceived}
-                        onChange={(e) => setCashReceived(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-black text-white font-mono"
+                        type="text"
+                        placeholder="Ej: Carlos Ruiz, Juan, Doña María..."
+                        value={clienteFiado}
+                        onChange={(e) => setClienteFiado(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-400"
+                        autoFocus
                       />
-                      {Number(cashReceived) >= finalTotal && (
-                        <div className="p-2 bg-emerald-950/40 border border-emerald-500/30 rounded-xl text-xs font-black text-emerald-400 flex justify-between">
-                          <span>Cambio:</span>
-                          <span className="font-mono">${(Number(cashReceived) - finalTotal).toLocaleString()}</span>
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>
 
                 <button
                   onClick={handleFinalizeSale}
-                  className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black uppercase text-xs rounded-2xl shadow-lg cursor-pointer active:scale-95"
+                  className={`w-full py-3.5 font-black uppercase text-xs rounded-2xl shadow-lg cursor-pointer active:scale-95 text-slate-950 ${
+                    paymentMethod === "fiado"
+                      ? "bg-gradient-to-r from-amber-400 to-orange-400 hover:from-amber-300 hover:to-orange-300"
+                      : "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400"
+                  }`}
                 >
-                  ✅ Cobrar y Finalizar Venta
+                  {paymentMethod === "fiado" ? "📌 Registrar Cuenta Fiada (Liberar Mesa)" : "✅ Cobrar y Finalizar Venta"}
                 </button>
               </>
             ) : (
               <div className="text-center py-6 space-y-4">
                 <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto animate-bounce" />
-                <h3 className="font-black text-xl text-white">¡Venta Registrada y Stock Descontado!</h3>
-                <button
-                  onClick={() => { setShowCheckout(false); setSelectedMesa(null); }}
-                  className="w-full py-3 bg-pink-500 text-white font-black uppercase text-xs rounded-2xl"
-                >
+                <h3 className="font-black text-xl text-white">
+                  {paymentMethod === "fiado"
+                    ? `¡Cuenta Fiada Registrada a ${clienteFiado}! (Mesa Liberada)`
+                    : "¡Venta Registrada!"}
+                </h3>
+                <button onClick={() => { setShowCheckout(false); setSelectedMesa(null); }} className="w-full py-3 bg-pink-500 text-white font-black uppercase text-xs rounded-2xl cursor-pointer">
                   Volver al Mapa
                 </button>
               </div>
