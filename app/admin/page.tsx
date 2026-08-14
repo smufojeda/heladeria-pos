@@ -28,6 +28,8 @@ import {
   PieChart,
   AlertTriangle,
   Award,
+  Clock,
+  Receipt,
 } from "lucide-react";
 
 interface PagoParcial {
@@ -52,7 +54,7 @@ interface Venta {
   items_detalle: { nombre: string; cantidad: number; precio: number }[];
 }
 
-interface Compra {
+interface Gasto {
   id?: number;
   fecha: string;
   descripcion: string;
@@ -71,7 +73,7 @@ interface Producto {
 
 export default function AdminDashboard() {
   const [ventas, setVentas] = useState<Venta[]>([]);
-  const [compras, setCompras] = useState<Compra[]>([]);
+  const [gastos, setGastos] = useState<Gasto[]>([]);
   const [productos, setProductos] = useState<Producto[]>([]);
   const [loading, setLoading] = useState(true);
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
@@ -89,20 +91,23 @@ export default function AdminDashboard() {
   const [newPaymentMethod, setNewPaymentMethod] = useState<"efectivo" | "nequi" | "daviplata" | "tarjeta">("efectivo");
   const [showAllFiadosModal, setShowAllFiadosModal] = useState(false);
 
-  const [showCompraModal, setShowCompraModal] = useState<string | null>(null);
-  const [compraText, setCompraText] = useState("");
-  const [compraMonto, setCompraMonto] = useState("");
+  // Modal para ver y registrar todos los gastos
+  const [showAllGastosModal, setShowAllGastosModal] = useState(false);
+
+  const [showGastoModal, setShowGastoModal] = useState<string | null>(null);
+  const [gastoText, setGastoText] = useState("");
+  const [gastoMonto, setGastoMonto] = useState("");
 
   const loadData = async () => {
     setLoading(true);
     try {
       const { data: vData } = await supabase.from("ventas").select("*").order("created_at", { ascending: false });
       const { data: pData } = await supabase.from("productos").select("*").order("stock", { ascending: true });
-      const { data: cData } = await supabase.from("compras").select("*").order("created_at", { ascending: false });
+      const { data: gData } = await supabase.from("gastos").select("*").order("created_at", { ascending: false });
 
       if (vData) setVentas(vData as Venta[]);
       if (pData) setProductos(pData as Producto[]);
-      if (cData) setCompras(cData as Compra[]);
+      if (gData) setGastos(gData as Gasto[]);
     } catch (_) {}
     setLoading(false);
   };
@@ -122,16 +127,16 @@ export default function AdminDashboard() {
     return grupos;
   }, [ventas]);
 
-  const comprasPorDia = useMemo(() => {
-    const grupos: Record<string, Compra[]> = {};
-    compras.forEach((c) => {
-      if (!grupos[c.fecha]) grupos[c.fecha] = [];
-      grupos[c.fecha].push(c);
+  const gastosPorDia = useMemo(() => {
+    const grupos: Record<string, Gasto[]> = {};
+    gastos.forEach((g) => {
+      if (!grupos[g.fecha]) grupos[g.fecha] = [];
+      grupos[g.fecha].push(g);
     });
     return grupos;
-  }, [compras]);
+  }, [gastos]);
 
-  // Soporte para fiados simples y dentro de desglose_pagos
+  // Lista fiados
   const listaFiadosActivos = useMemo(() => {
     return ventas.filter((v) => {
       if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
@@ -177,29 +182,31 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleAddCompra = async () => {
-    if (!showCompraModal || !compraText.trim() || !compraMonto) return;
+  const handleAddGasto = async () => {
+    if (!showGastoModal || !gastoText.trim() || !gastoMonto) return;
 
-    const montoVal = Number(compraMonto) || 0;
+    const montoVal = Number(gastoMonto) || 0;
+    const nowIso = new Date().toISOString();
 
-    const { error } = await supabase.from("compras").insert({
-      fecha: showCompraModal,
-      descripcion: compraText,
+    const { error } = await supabase.from("gastos").insert({
+      fecha: showGastoModal,
+      descripcion: gastoText.trim(),
       monto: montoVal,
+      created_at: nowIso,
     });
 
-    if (error) {
-      setCompras((prev) => [
-        ...prev,
-        { fecha: showCompraModal, descripcion: compraText, monto: montoVal },
-      ]);
-    } else {
+    if (!error) {
       loadData();
+    } else {
+      setGastos((prev) => [
+        { fecha: showGastoModal, descripcion: gastoText, monto: montoVal, created_at: nowIso },
+        ...prev,
+      ]);
     }
 
-    setCompraText("");
-    setCompraMonto("");
-    setShowCompraModal(null);
+    setGastoText("");
+    setGastoMonto("");
+    setShowGastoModal(null);
   };
 
   // Totales Globales
@@ -225,9 +232,9 @@ export default function AdminDashboard() {
     }, 0);
   }, [ventas]);
 
-  const totalGastosCompras = useMemo(() => compras.reduce((acc, c) => acc + (c.monto || 0), 0), [compras]);
+  const totalGastosCompras = useMemo(() => gastos.reduce((acc, g) => acc + (g.monto || 0), 0), [gastos]);
 
-  // CÁLCULOS PARA GRÁFICAS
+  // CÁLCULOS GRÁFICAS
   const distribucionMetodos = useMemo(() => {
     const map: Record<string, number> = {};
     ventas.forEach((v) => {
@@ -282,7 +289,7 @@ export default function AdminDashboard() {
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased p-3 sm:p-6 lg:p-8 selection:bg-pink-500 selection:text-white">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* HEADER ADMIN */}
+        {/* HEADER ADMIN CON BOTÓN DE GASTOS */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-slate-900/90 border border-pink-500/30 p-4 sm:p-5 rounded-3xl shadow-2xl backdrop-blur-md">
           <div className="flex items-center gap-3">
             <Link href="/" className="p-2.5 bg-slate-950 border border-slate-800 rounded-2xl hover:bg-slate-800 text-pink-400 transition-all cursor-pointer">
@@ -293,12 +300,21 @@ export default function AdminDashboard() {
                 Anti Café - Panel Administrador
               </h1>
               <p className="text-[10px] sm:text-xs font-bold text-slate-400 flex items-center gap-1">
-                <Sparkles className="w-3 h-3 text-pink-400" /> Métricas, Control de Ventas, Fiados y Compras Diarias
+                <Sparkles className="w-3 h-3 text-pink-400" /> Métricas, Control de Ventas, Fiados y Gastos Diarios
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5 w-full sm:w-auto">
+          <div className="flex items-center gap-2.5 w-full sm:w-auto flex-wrap">
+            {/* BOTÓN HISTORIAL DE GASTOS */}
+            <button
+              onClick={() => setShowAllGastosModal(true)}
+              className="flex-1 sm:flex-none px-4 py-2.5 bg-gradient-to-r from-rose-500 to-pink-500 text-white font-black rounded-xl text-xs uppercase flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(244,63,94,0.4)] cursor-pointer active:scale-95 transition-all"
+            >
+              <ShoppingCart className="w-4 h-4" /> Ver Gastos (${totalGastosCompras.toLocaleString()})
+            </button>
+
+            {/* BOTÓN FIADOS */}
             <button
               onClick={() => setShowAllFiadosModal(true)}
               className="flex-1 sm:flex-none px-4 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 hover:from-amber-400 hover:to-orange-400 font-black rounded-xl text-xs uppercase flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(245,158,11,0.4)] cursor-pointer active:scale-95 transition-all"
@@ -306,6 +322,7 @@ export default function AdminDashboard() {
               <BookOpenCheck className="w-4 h-4" /> Fiados ({listaFiadosActivos.length})
             </button>
 
+            {/* BOTÓN REFRESCAR */}
             <button onClick={loadData} className="px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-xs font-black text-cyan-300 transition-all flex items-center justify-center gap-2 cursor-pointer hover:bg-slate-700">
               <RefreshCw className="w-4 h-4" /> <span className="hidden sm:inline">Actualizar</span>
             </button>
@@ -336,7 +353,7 @@ export default function AdminDashboard() {
 
           <div className="bg-slate-900 border border-slate-800 p-4 sm:p-5 rounded-3xl flex items-center justify-between shadow-lg">
             <div>
-              <span className="text-[10px] font-black uppercase text-rose-400 block">Total Compras/Gastos</span>
+              <span className="text-[10px] font-black uppercase text-rose-400 block">Total Gastos / Compras</span>
               <span className="text-xl sm:text-2xl font-black text-rose-400 font-mono">${totalGastosCompras.toLocaleString()}</span>
             </div>
             <div className="w-10 h-10 sm:w-12 sm:h-12 bg-rose-500/10 rounded-2xl border border-rose-500/30 flex items-center justify-center text-rose-400">
@@ -358,7 +375,7 @@ export default function AdminDashboard() {
         {/* SECCIÓN DE GRÁFICAS COMPACTAS CON BOTÓN DE OJITO */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4 items-start">
           
-          {/* GRÁFICA 1: INGRESOS POR MÉTODOS DE PAGO */}
+          {/* GRÁFICA 1 */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl transition-all duration-300 overflow-hidden">
             <button
               onClick={() => setShowChartMetodos(!showChartMetodos)}
@@ -409,7 +426,7 @@ export default function AdminDashboard() {
             )}
           </div>
 
-          {/* GRÁFICA 2: PRODUCTOS MÁS VENDIDOS */}
+          {/* GRÁFICA 2 */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl transition-all duration-300 overflow-hidden">
             <button
               onClick={() => setShowChartProductos(!showChartProductos)}
@@ -460,7 +477,7 @@ export default function AdminDashboard() {
             )}
           </div>
 
-          {/* GRÁFICA 3: TOP 5 DÍAS DE MAYOR VENTA */}
+          {/* GRÁFICA 3 */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl transition-all duration-300 overflow-hidden">
             <button
               onClick={() => setShowChartTopDias(!showChartTopDias)}
@@ -518,7 +535,7 @@ export default function AdminDashboard() {
         {/* HISTORIAL Y STOCK */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           
-          {/* HISTORIAL POR DÍAS (CARPETAS) */}
+          {/* HISTORIAL POR DÍAS */}
           <div className="lg:col-span-2 space-y-4">
             <h3 className="text-lg font-black text-white flex items-center gap-2">
               <Calendar className="w-5 h-5 text-pink-400" /> Historial de Días
@@ -533,7 +550,7 @@ export default function AdminDashboard() {
             ) : (
               Object.entries(ventasPorDia).map(([fecha, ventasDia]) => {
                 const isOpen = !!openFolders[fecha];
-                const comprasDia = comprasPorDia[fecha] || [];
+                const gastosDia = gastosPorDia[fecha] || [];
 
                 const totalBrutoDia = ventasDia.reduce((acc, v) => {
                   if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
@@ -542,8 +559,8 @@ export default function AdminDashboard() {
                   return acc + (!v.metodo_pago?.toLowerCase().includes("fiado") ? v.total || 0 : 0);
                 }, 0);
 
-                const totalComprasDia = comprasDia.reduce((a, b) => a + (b.monto || 0), 0);
-                const totalNetoDia = totalBrutoDia - totalComprasDia;
+                const totalGastosDia = gastosDia.reduce((a, b) => a + (b.monto || 0), 0);
+                const totalNetoDia = totalBrutoDia - totalGastosDia;
 
                 const porMetodo = ventasDia.reduce((acc, v) => {
                   if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
@@ -569,7 +586,7 @@ export default function AdminDashboard() {
                         <div>
                           <span className="font-black text-sm text-white block">{fecha}</span>
                           <span className="text-[10px] font-bold text-slate-400">
-                            {ventasDia.length} Transacciones | {comprasDia.length} Compras
+                            {ventasDia.length} Transacciones | {gastosDia.length} Gastos
                           </span>
                         </div>
                       </button>
@@ -581,10 +598,10 @@ export default function AdminDashboard() {
                         </div>
 
                         <button
-                          onClick={() => setShowCompraModal(fecha)}
+                          onClick={() => setShowGastoModal(fecha)}
                           className="px-3 py-1.5 bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-black hover:bg-rose-500 hover:text-white transition-all flex items-center gap-1 cursor-pointer"
                         >
-                          <PlusCircle className="w-3.5 h-3.5" /> Compras
+                          <PlusCircle className="w-3.5 h-3.5" /> Gastos
                         </button>
 
                         <button onClick={() => toggleFolder(fecha)} className="p-1 cursor-pointer">
@@ -595,7 +612,7 @@ export default function AdminDashboard() {
 
                     {isOpen && (
                       <div className="p-4 space-y-4 bg-slate-950/50">
-                        {/* DESGLOSE DE PAGO DE ESE DÍA */}
+                        {/* DESGLOSE DÍA */}
                         <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800">
                           <h4 className="text-[10px] font-black uppercase text-pink-400 mb-2 flex items-center gap-1">
                             <Wallet className="w-3.5 h-3.5" /> Desglose Métodos de Pago del Día:
@@ -619,24 +636,37 @@ export default function AdminDashboard() {
                           </div>
                         </div>
 
-                        {/* COMPRAS DEL DÍA */}
-                        {comprasDia.length > 0 && (
+                        {/* GASTOS DEL DÍA CON HORA */}
+                        {gastosDia.length > 0 && (
                           <div className="bg-rose-950/20 border border-rose-500/30 p-3 rounded-2xl space-y-2">
                             <h4 className="text-[10px] font-black uppercase text-rose-400 flex items-center gap-1">
-                              <MinusCircle className="w-3.5 h-3.5" /> Compras / Gastos del Día (-${totalComprasDia.toLocaleString()}):
+                              <MinusCircle className="w-3.5 h-3.5" /> Gastos / Compras del Día (-${totalGastosDia.toLocaleString()}):
                             </h4>
                             <div className="space-y-1">
-                              {comprasDia.map((comp, idx) => (
-                                <div key={idx} className="flex justify-between items-center text-xs font-bold text-rose-200 bg-slate-950 p-2 rounded-xl">
-                                  <span>{comp.descripcion}</span>
-                                  <span className="font-mono text-rose-400">-${comp.monto.toLocaleString()}</span>
-                                </div>
-                              ))}
+                              {gastosDia.map((g, idx) => {
+                                const horaStr = g.created_at
+                                  ? new Date(g.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                                  : "";
+
+                                return (
+                                  <div key={idx} className="flex justify-between items-center text-xs font-bold text-rose-200 bg-slate-950 p-2 rounded-xl">
+                                    <div className="flex items-center gap-2">
+                                      <span>{g.descripcion}</span>
+                                      {horaStr && (
+                                        <span className="text-[9px] text-slate-400 font-mono flex items-center gap-0.5">
+                                          <Clock className="w-2.5 h-2.5" /> {horaStr}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="font-mono text-rose-400">-${g.monto.toLocaleString()}</span>
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         )}
 
-                        {/* LISTA DE COMANDAS */}
+                        {/* COMANDAS */}
                         <div className="space-y-3">
                           <h4 className="text-[10px] font-black uppercase text-slate-400">Comandas y Transacciones:</h4>
                           {ventasDia.map((v) => {
@@ -669,11 +699,9 @@ export default function AdminDashboard() {
                                       {new Date(v.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                                     </span>
 
-                                    {/* BOTÓN OJITO TOGGLE */}
                                     <button
                                       onClick={() => toggleItems(v.id)}
                                       className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-pink-400 transition-all cursor-pointer flex items-center gap-1 border border-slate-800 text-[10px] font-bold"
-                                      title={itemsVisibles ? "Ocultar Productos" : "Ver Productos"}
                                     >
                                       {itemsVisibles ? <EyeOff className="w-3.5 h-3.5 text-pink-400" /> : <Eye className="w-3.5 h-3.5 text-slate-400" />}
                                       <span className="hidden sm:inline">{itemsVisibles ? "Ocultar" : "Ver Items"}</span>
@@ -681,7 +709,6 @@ export default function AdminDashboard() {
                                   </div>
                                 </div>
 
-                                {/* LISTA DE PRODUCTOS (OJITO TOGGLE) */}
                                 {itemsVisibles && (
                                   <div className="space-y-1 my-2 bg-slate-900/60 p-2.5 rounded-xl border border-slate-800/80 animate-fadeIn">
                                     <span className="text-[9px] font-black uppercase text-slate-400 block mb-1">Detalle del Consumo:</span>
@@ -728,7 +755,7 @@ export default function AdminDashboard() {
             )}
           </div>
 
-          {/* TABLERO DE INVENTARIO Y STOCK */}
+          {/* CONTROL STOCK */}
           <div className="space-y-4">
             <h3 className="text-lg font-black text-white flex items-center gap-2">
               <Package className="w-5 h-5 text-cyan-400" /> Control de Stock
@@ -764,7 +791,72 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* MODAL GENERAL DE TODOS LOS FIADOS PENDIENTES */}
+      {/* MODAL VER TODOS LOS GASTOS DE LA BASE DE DATOS */}
+      {showAllGastosModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-2xl w-full shadow-2xl relative space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="font-black text-base sm:text-lg text-white flex items-center gap-2">
+                  <ShoppingCart className="w-5 h-5 text-rose-400" /> Historial de Gastos y Compras
+                </h3>
+                <p className="text-[10px] text-slate-400 font-bold">Total Gastos Registrados: ${totalGastosCompras.toLocaleString()}</p>
+              </div>
+              <button onClick={() => setShowAllGastosModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex justify-between items-center bg-slate-950 p-3 rounded-2xl border border-slate-800">
+              <span className="text-xs font-black text-slate-300">¿Deseas registrar un nuevo gasto?</span>
+              <button
+                onClick={() => {
+                  const hoy = new Date().toISOString().split("T")[0];
+                  setShowGastoModal(hoy);
+                }}
+                className="px-3.5 py-1.5 bg-gradient-to-r from-rose-500 to-pink-500 text-white font-black text-xs uppercase rounded-xl hover:scale-105 transition-all cursor-pointer shadow-md flex items-center gap-1"
+              >
+                <PlusCircle className="w-4 h-4" /> Nuevo Gasto
+              </button>
+            </div>
+
+            {gastos.length === 0 ? (
+              <div className="text-center py-10 text-slate-500 font-bold text-xs">
+                🛒 No hay gastos o compras registradas en la base de datos.
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+                {gastos.map((gasto, idx) => {
+                  const fechaFormateada = gasto.created_at
+                    ? new Date(gasto.created_at).toLocaleDateString()
+                    : gasto.fecha;
+                  const horaFormateada = gasto.created_at
+                    ? new Date(gasto.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                    : "S/H";
+
+                  return (
+                    <div key={gasto.id || idx} className="bg-slate-950 p-3.5 rounded-2xl border border-rose-500/30 flex justify-between items-center shadow-md">
+                      <div>
+                        <span className="font-black text-sm text-slate-100 block">{gasto.descripcion}</span>
+                        <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400 mt-0.5">
+                          <span className="flex items-center gap-1"><Calendar className="w-3 h-3 text-rose-400" /> {fechaFormateada}</span>
+                          <span className="flex items-center gap-1"><Clock className="w-3 h-3 text-rose-400" /> {horaFormateada}</span>
+                        </div>
+                      </div>
+
+                      <span className="font-mono text-rose-400 font-black text-base">
+                        -${gasto.monto.toLocaleString()}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL FIADOS */}
       {showAllFiadosModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-2xl w-full shadow-2xl relative space-y-4 max-h-[85vh] flex flex-col">
@@ -893,48 +985,48 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* MODAL REGISTRAR COMPRA */}
-      {showCompraModal && (
+      {/* MODAL REGISTRAR GASTO EN SUPABASE (gastos) */}
+      {showGastoModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl relative space-y-4">
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h3 className="font-black text-base text-white flex items-center gap-2">
-                <ShoppingCart className="w-5 h-5 text-rose-400" /> Agregar Compra ({showCompraModal})
+                <ShoppingCart className="w-5 h-5 text-rose-400" /> Agregar Gasto / Compra ({showGastoModal})
               </h3>
-              <button onClick={() => setShowCompraModal(null)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
+              <button onClick={() => setShowGastoModal(null)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="space-y-3">
               <div>
-                <label className="text-xs font-bold text-slate-400 block mb-1">Descripción de la Compra / Gasto:</label>
+                <label className="text-xs font-bold text-slate-400 block mb-1">Descripción del Gasto / Compra:</label>
                 <input
                   type="text"
                   placeholder="Ej: Leche, Vasos, Fruta..."
-                  value={compraText}
-                  onChange={(e) => setCompraText(e.target.value)}
+                  value={gastoText}
+                  onChange={(e) => setGastoText(e.target.value)}
                   className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-pink-500"
                 />
               </div>
 
               <div>
-                <label className="text-xs font-bold text-slate-400 block mb-1">Valor Numérico ($):</label>
+                <label className="text-xs font-bold text-slate-400 block mb-1">Monto ($):</label>
                 <input
                   type="number"
                   placeholder="Ej: 25000"
-                  value={compraMonto}
-                  onChange={(e) => setCompraMonto(e.target.value)}
+                  value={gastoMonto}
+                  onChange={(e) => setGastoMonto(e.target.value)}
                   className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-pink-500 font-mono"
                 />
               </div>
             </div>
 
             <button
-              onClick={handleAddCompra}
+              onClick={handleAddGasto}
               className="w-full py-3 bg-gradient-to-r from-rose-500 to-pink-500 text-white font-black text-xs uppercase rounded-2xl shadow-lg cursor-pointer active:scale-95 transition-all"
             >
-              ➕ Registrar Gasto y Descontar
+              ➕ Registrar Gasto y Guardar
             </button>
           </div>
         </div>

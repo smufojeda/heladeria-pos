@@ -18,17 +18,16 @@ import {
   Check,
   Clock,
   ShieldCheck,
-  Tag,
   CheckCircle2,
   AlertCircle,
   Send,
   Trash2,
-  BookOpenCheck,
-  User,
   DollarSign,
   Calculator,
   Wallet,
   Lock,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 
 type EstadoMesa = "libre" | "pendiente_servir" | "preparado" | "servido" | "pendiente_pago";
@@ -99,6 +98,9 @@ export default function HomePOS() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [initialItemsCount, setInitialItemsCount] = useState<number>(0);
 
+  // Estado para desplegar el carrito en móvil
+  const [showMobileCart, setShowMobileCart] = useState(false);
+
   // Modal Caja Inteligente
   const [showCheckout, setShowCheckout] = useState(false);
   const [discountInput, setDiscountInput] = useState<string>("0");
@@ -111,6 +113,11 @@ export default function HomePOS() {
   const [efectivoRecibido, setEfectivoRecibido] = useState<string>("");
   const [clienteFiado, setClienteFiado] = useState<string>("");
   const [saleCompleted, setSaleCompleted] = useState<boolean>(false);
+
+  const categories = useMemo(() => {
+    const cats = new Set(productos.map((p) => p.categoria).filter(Boolean));
+    return ["Todos", ...Array.from(cats)];
+  }, [productos]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -152,11 +159,14 @@ export default function HomePOS() {
   }, []);
 
   const handleSelectMesa = async (mesa: Mesa) => {
+    if (vista === "caja" && mesa.estado === "libre") return;
+
     setSelectedMesa(mesa);
     setCart([]);
     setInitialItemsCount(0);
     setShowCheckout(false);
     setSaleCompleted(false);
+    setShowMobileCart(false);
     setPagos([]);
     setMontoIngresado("");
     setEfectivoRecibido("");
@@ -193,7 +203,7 @@ export default function HomePOS() {
   };
 
   const addToCart = (producto: Producto) => {
-    if (vista === "caja") return; // Restricción: El cajero no puede tomar pedidos
+    if (vista === "caja") return;
     setCart((prev) => {
       const isAdicion = initialItemsCount > 0;
       const existing = prev.find(
@@ -212,7 +222,7 @@ export default function HomePOS() {
   };
 
   const updateQuantity = (productoId: number, delta: number, esAdicion: boolean = false) => {
-    if (vista === "caja") return; // Restricción: El cajero no modifica cantidades
+    if (vista === "caja") return;
     setCart((prev) =>
       prev
         .map((item) => {
@@ -238,7 +248,6 @@ export default function HomePOS() {
   const totalPagado = useMemo(() => pagos.reduce((acc, p) => acc + p.monto, 0), [pagos]);
   const saldoPendiente = useMemo(() => Math.max(0, finalTotal - totalPagado), [finalTotal, totalPagado]);
 
-  // Función para agregar un pago parcial o dividido
   const handleAgregarPago = () => {
     const monto = Number(montoIngresado);
     if (!monto || monto <= 0) {
@@ -321,19 +330,12 @@ export default function HomePOS() {
       }));
       await supabase.from("pedido_items").insert(itemsToInsert);
 
-      const adicionesItems = cart.filter((i) => i.es_adicion || initialItemsCount === 0);
-      for (const item of adicionesItems) {
-        const { error: rpcError } = await supabase.rpc("descontar_stock", {
-          p_id: item.producto.id,
-          p_cantidad: item.cantidad,
-        });
-
-        if (rpcError) {
-          const { data: prodData } = await supabase.from("productos").select("stock").eq("id", item.producto.id).single();
-          if (prodData) {
-            const newStock = Math.max(0, (prodData.stock ?? 50) - item.cantidad);
-            await supabase.from("productos").update({ stock: newStock, disponible: newStock > 0 }).eq("id", item.producto.id);
-          }
+      for (const item of cart) {
+        const { data: prodData } = await supabase.from("productos").select("stock").eq("id", item.producto.id).single();
+        if (prodData) {
+          const currentStock = prodData.stock ?? 50;
+          const newStock = Math.max(0, currentStock - item.cantidad);
+          await supabase.from("productos").update({ stock: newStock, disponible: newStock > 0 }).eq("id", item.producto.id);
         }
       }
     }
@@ -599,7 +601,13 @@ export default function HomePOS() {
 
                       <div className="pt-2 border-t border-slate-800/80">
                         {vista === "caja" ? (
-                          <button className="w-full py-1.5 bg-pink-500/20 text-pink-300 border border-pink-500/40 font-black text-xs rounded-xl">
+                          <button
+                            className={`w-full py-1.5 font-black text-xs rounded-xl border transition-all ${
+                              isLibre
+                                ? "bg-slate-950 text-slate-500 border-slate-800 cursor-not-allowed"
+                                : "bg-pink-500/20 text-pink-300 border-pink-500/40 hover:bg-pink-500 hover:text-white"
+                            }`}
+                          >
                             {isLibre ? "Disponible" : "💳 Cobrar"}
                           </button>
                         ) : (
@@ -626,98 +634,186 @@ export default function HomePOS() {
             </main>
           ) : (
             <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
-              {/* MENÚ PRODUCTOS (CON RESTRICCIÓN PARA MODO CAJA) */}
-              <div className="flex-1 p-4 sm:p-6 overflow-y-auto space-y-4 pb-32 lg:pb-6">
-                <div className="flex items-center justify-between gap-3">
-                  <button onClick={() => setSelectedMesa(null)} className="px-4 py-2 bg-slate-900 border border-slate-800 rounded-2xl text-xs font-black text-slate-300 flex items-center gap-2 cursor-pointer">
-                    <ArrowLeft className="w-4 h-4 text-pink-400" /> Volver a Mesas/Barras
-                  </button>
-                  <input
-                    type="text"
-                    placeholder="Buscar producto..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full max-w-xs px-3.5 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-pink-500"
-                  />
-                </div>
-
-                {vista === "caja" && (
-                  <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-300 text-xs font-bold flex items-center gap-2">
-                    <Lock className="w-4 h-4" /> Modo Caja Activo: Vista de solo lectura. Para modificar o tomar pedidos cambia a la vista Mesero.
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5">
-                  {filteredProducts.map((p) => (
-                    <div
-                      key={p.id}
-                      onClick={() => addToCart(p)}
-                      className={`bg-slate-900/90 border border-slate-800 p-4 rounded-3xl flex flex-col justify-between ${
-                        vista === "mesero" ? "cursor-pointer hover:border-pink-500/50" : "opacity-60 cursor-not-allowed"
-                      }`}
+              
+              {/* CONTENEDOR PRINCIPAL IZQUIERDO (PRODUCTOS Y BUSCADOR) */}
+              <div className="flex-1 flex flex-col h-full overflow-hidden">
+                
+                {/* 1er MENÚ FIJO EN LA PARTE SUPERIOR (BUSCADOR, VOLVER Y CATEGORÍAS) */}
+                <div className="sticky top-0 z-20 bg-slate-900 border-b border-slate-800 p-3 sm:p-4 shadow-md space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      onClick={() => setSelectedMesa(null)}
+                      className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-black text-slate-300 flex items-center gap-1.5 cursor-pointer hover:bg-slate-800 transition-all shrink-0"
                     >
-                      <div>
-                        <span className="text-[9px] font-black uppercase text-pink-400 bg-pink-500/10 px-2 py-0.5 rounded-full">{p.categoria}</span>
-                        <h4 className="font-black text-sm text-white mt-1.5">{p.nombre}</h4>
-                        <p className="text-[10px] font-mono text-slate-400 mt-1">Stock: {p.stock ?? 50}</p>
-                      </div>
-                      <div className="mt-4 pt-2 border-t border-slate-800 flex justify-between items-center">
-                        <span className="font-black text-sm text-emerald-400 font-mono">${p.precio.toLocaleString()}</span>
-                        {vista === "mesero" && (
-                          <span className="w-7 h-7 rounded-lg bg-pink-500/20 text-pink-400 font-black flex items-center justify-center">+</span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+                      <ArrowLeft className="w-4 h-4 text-pink-400" /> <span className="hidden sm:inline">Volver a</span> Mesas
+                    </button>
 
-              {/* PANEL COMANDA DE LA MESA */}
-              <div className="w-full lg:w-96 bg-slate-900/95 border-t lg:border-l border-slate-800 p-5 flex flex-col justify-between shadow-2xl">
-                <div>
-                  <h2 className="font-black text-lg text-white flex items-center gap-2 pb-3 border-b border-slate-800">
-                    <Receipt className="w-5 h-5 text-pink-400" /> {selectedMesa.nombre}
-                  </h2>
-                  <div className="my-4 space-y-3 max-h-[50vh] overflow-y-auto pr-1">
-                    {cart.map((item, idx) => (
-                      <div key={`${item.producto.id}-${item.es_adicion ? "adicion" : "normal"}-${idx}`} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex items-center justify-between">
+                    <div className="relative flex-1 max-w-md">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                      <input
+                        type="text"
+                        placeholder="Buscar producto..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full pl-9 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-pink-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* CATEGORÍAS EN SCROLL HORIZONTAL */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+                    {categories.map((cat) => (
+                      <button
+                        key={cat}
+                        onClick={() => setSelectedCategory(cat)}
+                        className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase whitespace-nowrap transition-all border cursor-pointer ${
+                          selectedCategory === cat
+                            ? "bg-pink-500 text-white border-pink-400 shadow-sm"
+                            : "bg-slate-950 text-slate-400 border-slate-800 hover:text-white"
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+
+                  {vista === "caja" && (
+                    <div className="p-2 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-[11px] font-bold flex items-center gap-2">
+                      <Lock className="w-3.5 h-3.5" /> Modo Caja: Vista de solo lectura. Para modificar cambia a vista Mesero.
+                    </div>
+                  )}
+                </div>
+
+                {/* LISTADO DE PRODUCTOS */}
+                <div className="flex-1 p-3 sm:p-6 overflow-y-auto pb-28 lg:pb-6">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {filteredProducts.map((p) => (
+                      <div
+                        key={p.id}
+                        onClick={() => addToCart(p)}
+                        className={`bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl flex flex-col justify-between transition-all ${
+                          vista === "mesero" ? "cursor-pointer hover:border-pink-500/50 active:scale-95" : "opacity-60 cursor-not-allowed"
+                        }`}
+                      >
                         <div>
-                          <h5 className="font-black text-xs text-slate-100 flex items-center gap-1.5">
-                            {item.producto.nombre}
-                            {item.es_adicion && <span className="text-[8px] bg-rose-500/20 text-rose-400 border border-rose-500/40 px-1.5 py-0.5 rounded-md font-bold">ADICIÓN</span>}
-                          </h5>
-                          <p className="text-[11px] text-slate-400 font-mono">${item.producto.precio.toLocaleString()}</p>
+                          <span className="text-[8px] font-black uppercase text-pink-400 bg-pink-500/10 px-2 py-0.5 rounded-full">{p.categoria}</span>
+                          <h4 className="font-black text-xs sm:text-sm text-white mt-1">{p.nombre}</h4>
+                          <p className="text-[9px] font-mono text-slate-400 mt-0.5">Stock: {p.stock ?? 50}</p>
                         </div>
-                        {vista === "mesero" ? (
-                          <div className="flex items-center gap-2">
-                            <button onClick={() => updateQuantity(item.producto.id, -1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black"><Minus className="w-3 h-3" /></button>
-                            <span className="font-black text-xs text-white">{item.cantidad}</span>
-                            <button onClick={() => updateQuantity(item.producto.id, 1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black"><Plus className="w-3 h-3" /></button>
-                          </div>
-                        ) : (
-                          <span className="font-black text-xs text-slate-300">x{item.cantidad}</span>
-                        )}
+                        <div className="mt-3 pt-2 border-t border-slate-800/80 flex justify-between items-center">
+                          <span className="font-black text-xs sm:text-sm text-emerald-400 font-mono">${p.precio.toLocaleString()}</span>
+                          {vista === "mesero" && (
+                            <span className="w-6 h-6 rounded-lg bg-pink-500/20 text-pink-400 font-black flex items-center justify-center text-xs">+</span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                <div className="pt-4 border-t border-slate-800 space-y-3">
-                  <div className="flex justify-between text-lg font-black text-white">
-                    <span>TOTAL</span>
-                    <span className="font-mono text-emerald-400">${subtotalAmount.toLocaleString()}</span>
-                  </div>
-                  {vista === "mesero" ? (
-                    <button onClick={handleSaveOrder} disabled={cart.length === 0} className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase rounded-2xl shadow flex items-center justify-center gap-2 cursor-pointer active:scale-95">
-                      <ChefHat className="w-5 h-5" /> Enviar a Cocina
-                    </button>
-                  ) : (
-                    <button onClick={() => setShowCheckout(true)} disabled={cart.length === 0} className="w-full py-3.5 bg-pink-500 hover:bg-pink-400 text-white font-black text-xs uppercase rounded-2xl shadow flex items-center justify-center gap-2 cursor-pointer active:scale-95">
-                      <CreditCard className="w-5 h-5" /> Ir al Módulo de Cobro
-                    </button>
-                  )}
-                </div>
               </div>
+
+              {/* 2do MENÚ FIJO INFERIOR EN MÓVIL Y PANEL LATERAL EN ESCRITORIO */}
+              <div className="fixed lg:relative bottom-0 left-0 right-0 z-30 bg-slate-900/95 border-t lg:border-l border-slate-800 shadow-2xl transition-all duration-300">
+                
+                {/* BARRA MÓVIL SIEMPRE VISIBLE ABAJO */}
+                <div className="lg:hidden p-3.5 bg-slate-950 flex items-center justify-between border-b border-slate-800">
+                  <div>
+                    <span className="text-[10px] font-black uppercase text-pink-400 block">{selectedMesa.nombre}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-base font-black text-white font-mono">${subtotalAmount.toLocaleString()}</span>
+                      <span className="text-[10px] text-slate-400">({cart.reduce((a, b) => a + b.cantidad, 0)} items)</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* BOTÓN CON FLECHITA PARA DESPLEGAR/VER PRODUCTOS */}
+                    <button
+                      onClick={() => setShowMobileCart(!showMobileCart)}
+                      className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-pink-400 hover:bg-slate-800 transition-all flex items-center justify-center cursor-pointer"
+                    >
+                      {showMobileCart ? <ChevronDown className="w-5 h-5 text-pink-400" /> : <ChevronUp className="w-5 h-5 text-pink-400" />}
+                    </button>
+
+                    {vista === "mesero" ? (
+                      <button
+                        onClick={handleSaveOrder}
+                        disabled={cart.length === 0}
+                        className={`px-3.5 py-2.5 font-black text-xs uppercase rounded-xl flex items-center gap-1.5 transition-all ${
+                          cart.length === 0 ? "bg-slate-800 text-slate-500 cursor-not-allowed" : "bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-md cursor-pointer active:scale-95"
+                        }`}
+                      >
+                        <ChefHat className="w-4 h-4" /> Cocina
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setShowCheckout(true)}
+                        disabled={cart.length === 0}
+                        className={`px-3.5 py-2.5 font-black text-xs uppercase rounded-xl flex items-center gap-1.5 transition-all ${
+                          cart.length === 0 ? "bg-slate-800 text-slate-500 cursor-not-allowed" : "bg-pink-500 hover:bg-pink-400 text-white shadow-md cursor-pointer active:scale-95"
+                        }`}
+                      >
+                        <CreditCard className="w-4 h-4" /> Cobrar
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* CONTENIDO DEL DESGLOSE DE PRODUCTOS (DESPLEGABLE MÓVIL Y SIEMPRE VISIBLE EN PC) */}
+                <div className={`${showMobileCart ? "block" : "hidden lg:block"} w-full lg:w-96 p-4 sm:p-5 flex flex-col justify-between max-h-[60vh] lg:max-h-none overflow-y-auto`}>
+                  <div>
+                    <h2 className="hidden lg:flex font-black text-lg text-white items-center gap-2 pb-3 border-b border-slate-800">
+                      <Receipt className="w-5 h-5 text-pink-400" /> {selectedMesa.nombre}
+                    </h2>
+                    
+                    <div className="my-3 space-y-2 max-h-[40vh] lg:max-h-[50vh] overflow-y-auto pr-1">
+                      {cart.length === 0 ? (
+                        <p className="text-xs text-slate-500 font-bold py-4 text-center">No hay productos añadidos</p>
+                      ) : (
+                        cart.map((item, idx) => (
+                          <div key={`${item.producto.id}-${item.es_adicion ? "adicion" : "normal"}-${idx}`} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between">
+                            <div>
+                              <h5 className="font-black text-xs text-slate-100 flex items-center gap-1.5">
+                                {item.producto.nombre}
+                                {item.es_adicion && <span className="text-[8px] bg-rose-500/20 text-rose-400 border border-rose-500/40 px-1 py-0.2 rounded font-bold">ADICIÓN</span>}
+                              </h5>
+                              <p className="text-[10px] text-slate-400 font-mono">${item.producto.precio.toLocaleString()}</p>
+                            </div>
+                            {vista === "mesero" ? (
+                              <div className="flex items-center gap-2">
+                                <button onClick={() => updateQuantity(item.producto.id, -1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black flex items-center justify-center cursor-pointer"><Minus className="w-3 h-3" /></button>
+                                <span className="font-black text-xs text-white">{item.cantidad}</span>
+                                <button onClick={() => updateQuantity(item.producto.id, 1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black flex items-center justify-center cursor-pointer"><Plus className="w-3 h-3" /></button>
+                              </div>
+                            ) : (
+                              <span className="font-black text-xs text-slate-300">x{item.cantidad}</span>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-800 space-y-3">
+                    <div className="hidden lg:flex justify-between text-lg font-black text-white">
+                      <span>TOTAL</span>
+                      <span className="font-mono text-emerald-400">${subtotalAmount.toLocaleString()}</span>
+                    </div>
+
+                    {vista === "mesero" ? (
+                      <button onClick={handleSaveOrder} disabled={cart.length === 0} className="hidden lg:flex w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase rounded-2xl shadow items-center justify-center gap-2 cursor-pointer active:scale-95">
+                        <ChefHat className="w-5 h-5" /> Enviar a Cocina
+                      </button>
+                    ) : (
+                      <button onClick={() => setShowCheckout(true)} disabled={cart.length === 0} className="hidden lg:flex w-full py-3.5 bg-pink-500 hover:bg-pink-400 text-white font-black text-xs uppercase rounded-2xl shadow items-center justify-center gap-2 cursor-pointer active:scale-95">
+                        <CreditCard className="w-5 h-5" /> Ir al Módulo de Cobro
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+              </div>
+
             </div>
           )}
         </>
@@ -733,7 +829,7 @@ export default function HomePOS() {
                   <h3 className="font-black text-lg text-white flex items-center gap-2">
                     <Calculator className="w-5 h-5 text-pink-400" /> Cobrar - {selectedMesa.nombre}
                   </h3>
-                  <button onClick={() => setShowCheckout(false)} className="w-8 h-8 rounded-xl bg-slate-800 text-slate-400 flex items-center justify-center">
+                  <button onClick={() => setShowCheckout(false)} className="w-8 h-8 rounded-xl bg-slate-800 text-slate-400 flex items-center justify-center cursor-pointer">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
@@ -814,7 +910,7 @@ export default function HomePOS() {
                   </div>
                 </div>
 
-                {/* SECCIÓN CAJA INTELIGENTE - MÉTODOS Y CÁLCULO */}
+                {/* SECCIÓN CAJA INTELIGENTE */}
                 <div className="bg-slate-950 p-4 rounded-2xl border border-pink-500/30 mb-4 space-y-3">
                   <h4 className="text-xs font-black text-pink-300 uppercase tracking-wider flex items-center gap-1.5">
                     <Wallet className="w-4 h-4 text-pink-400" /> Registrar Forma de Pago
@@ -825,7 +921,7 @@ export default function HomePOS() {
                       <button
                         key={m}
                         onClick={() => setCurrentMetodo(m)}
-                        className={`py-2 rounded-xl text-[10px] font-black uppercase transition-all border ${
+                        className={`py-2 rounded-xl text-[10px] font-black uppercase transition-all border cursor-pointer ${
                           currentMetodo === m
                             ? "bg-pink-500 text-white border-pink-400 shadow-[0_0_10px_rgba(236,72,153,0.4)]"
                             : "bg-slate-900 text-slate-400 border-slate-800"
@@ -909,7 +1005,7 @@ export default function HomePOS() {
                             <span className="text-[10px] text-amber-400 block">Fiado a: {p.clienteFiado}</span>
                           )}
                         </div>
-                        <button onClick={() => handleEliminarPago(idx)} className="text-rose-400 hover:text-white p-1">
+                        <button onClick={() => handleEliminarPago(idx)} className="text-rose-400 hover:text-white p-1 cursor-pointer">
                           <X className="w-4 h-4" />
                         </button>
                       </div>
