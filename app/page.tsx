@@ -3,10 +3,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import {
-  IceCream,
-  Users,
-  Clock,
-  PlusCircle,
   ShoppingBag,
   CreditCard,
   Receipt,
@@ -258,11 +254,15 @@ export default function HomePOS() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased flex flex-col selection:bg-pink-500 selection:text-white">
-      {/* HEADER RESPONSIVO */}
+      {/* HEADER RESPONSIVO CON LOGO DE CAFÉ */}
       <header className="sticky top-0 z-30 bg-slate-900/90 backdrop-blur-md border-b border-pink-500/20 px-3 sm:px-8 py-3 flex items-center justify-between shadow-xl">
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-xl sm:rounded-2xl bg-gradient-to-tr from-pink-500 to-purple-600 flex items-center justify-center text-white shadow-[0_0_15px_rgba(236,72,153,0.5)]">
-            <IceCream className="w-5 h-5 sm:w-6 sm:h-6 animate-bounce" />
+          <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-gradient-to-tr from-pink-500 to-purple-600 p-1 flex items-center justify-center text-white shadow-[0_0_15px_rgba(236,72,153,0.5)]">
+            <img
+              src="/cafe.png"
+              alt="Logo Café"
+              className="w-full h-full object-contain rounded-lg"
+            />
           </div>
           <div>
             <h1 className="text-base sm:text-xl font-black tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-pink-400 via-purple-300 to-cyan-300 uppercase">
@@ -307,13 +307,13 @@ export default function HomePOS() {
             </div>
           </div>
 
-          {/* GRID DE MESAS ADAPTATIVO */}
+          {/* GRID DE MESAS MINIMALISTA CON IMAGEN DESTACADA */}
           {loading ? (
             <div className="text-center py-20 text-slate-400 font-bold animate-pulse text-xs sm:text-sm">
               Cargando mapa de salón...
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 sm:gap-6">
               {mesas.map((mesa) => {
                 const isDisp = mesa.estado === "disponible";
                 const isOcup = mesa.estado === "ocupada";
@@ -322,25 +322,21 @@ export default function HomePOS() {
                   <div
                     key={mesa.id}
                     onClick={() => handleSelectMesa(mesa)}
-                    className={`group relative rounded-2xl sm:rounded-3xl p-3.5 sm:p-5 border-2 transition-all cursor-pointer overflow-hidden flex flex-col justify-between h-36 sm:h-44 shadow-lg active:scale-95 ${
+                    className={`group relative rounded-3xl p-4 border-2 transition-all cursor-pointer overflow-hidden flex flex-col justify-between h-56 sm:h-64 shadow-xl active:scale-95 ${
                       isDisp
-                        ? "bg-slate-900/80 border-emerald-500/30 hover:border-emerald-400/80 shadow-[0_0_15px_rgba(16,185,129,0.05)]"
+                        ? "bg-slate-900/80 border-emerald-500/30 hover:border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.08)]"
                         : isOcup
-                        ? "bg-rose-950/20 border-rose-500/60 hover:border-rose-400 shadow-[0_0_20px_rgba(244,63,94,0.15)]"
-                        : "bg-amber-950/20 border-amber-400/60 hover:border-amber-300 shadow-[0_0_20px_rgba(251,191,36,0.15)]"
+                        ? "bg-rose-950/20 border-rose-500/60 hover:border-rose-400 shadow-[0_0_20px_rgba(244,63,94,0.2)]"
+                        : "bg-amber-950/20 border-amber-400/60 hover:border-amber-300 shadow-[0_0_20px_rgba(251,191,36,0.2)]"
                     }`}
                   >
-                    <div className="flex justify-between items-start gap-1">
-                      <div>
-                        <h3 className="font-black text-base sm:text-xl text-white tracking-wide group-hover:text-pink-300 transition-colors">
-                          {mesa.nombre}
-                        </h3>
-                        <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 flex items-center gap-1 mt-0.5">
-                          <Users className="w-3 h-3" /> Cap: {mesa.capacidad}
-                        </p>
-                      </div>
+                    {/* ENCABEZADO: TÍTULO Y ETIQUETA DE ESTADO */}
+                    <div className="flex justify-between items-center z-10">
+                      <h3 className="font-black text-lg sm:text-2xl text-white tracking-wide group-hover:text-pink-300 transition-colors">
+                        {mesa.nombre}
+                      </h3>
                       <span
-                        className={`text-[8px] sm:text-[9px] font-black px-2 py-0.5 sm:px-3 sm:py-1 rounded-full uppercase tracking-wider ${
+                        className={`text-[9px] sm:text-[10px] font-black px-2.5 py-1 rounded-full uppercase tracking-wider ${
                           isDisp
                             ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
                             : isOcup
@@ -352,16 +348,13 @@ export default function HomePOS() {
                       </span>
                     </div>
 
-                    <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] sm:text-xs font-black">
-                      {isDisp ? (
-                        <span className="text-emerald-400 flex items-center gap-1">
-                          <PlusCircle className="w-3.5 h-3.5" /> Abrir
-                        </span>
-                      ) : (
-                        <span className="text-amber-300 flex items-center gap-1">
-                          <Clock className="w-3.5 h-3.5" /> Ver
-                        </span>
-                      )}
+                    {/* IMAGEN DE LA MESA MUCHO MÁS GRANDE Y DESTACADA */}
+                    <div className="flex-1 flex justify-center items-center my-2 relative">
+                      <img
+                        src={isDisp ? "/mesa1.png" : "/mesa2.png"}
+                        alt={isDisp ? "Mesa Libre" : "Mesa Ocupada"}
+                        className="h-28 sm:h-36 w-auto object-contain transition-transform duration-300 group-hover:scale-110 drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]"
+                      />
                     </div>
                   </div>
                 );
