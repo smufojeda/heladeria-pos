@@ -25,10 +25,15 @@ import {
   Trash2,
   BookOpenCheck,
   User,
+  DollarSign,
+  Calculator,
+  Wallet,
+  Lock,
 } from "lucide-react";
 
 type EstadoMesa = "libre" | "pendiente_servir" | "preparado" | "servido" | "pendiente_pago";
 type ModoVista = "caja" | "mesero" | "cocina";
+type MetodoPago = "efectivo" | "nequi" | "daviplata" | "tarjeta" | "fiado";
 
 interface Mesa {
   id: number;
@@ -53,6 +58,14 @@ interface CartItem {
   cantidad: number;
   notas?: string;
   es_adicion?: boolean;
+}
+
+interface PagoParcial {
+  metodo: MetodoPago;
+  monto: number;
+  montoEntregadoEfectivo?: number;
+  cambioEfectivo?: number;
+  clienteFiado?: string;
 }
 
 interface PedidoCocina {
@@ -86,12 +99,17 @@ export default function HomePOS() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [initialItemsCount, setInitialItemsCount] = useState<number>(0);
 
-  // Modal Caja
+  // Modal Caja Inteligente
   const [showCheckout, setShowCheckout] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<"efectivo" | "nequi" | "daviplata" | "tarjeta" | "fiado">("efectivo");
-  const [clienteFiado, setClienteFiado] = useState<string>("");
   const [discountInput, setDiscountInput] = useState<string>("0");
   const [discountType, setDiscountType] = useState<"monto" | "porcentaje">("monto");
+  
+  // Estados para Pago Mixto y Caja
+  const [pagos, setPagos] = useState<PagoParcial[]>([]);
+  const [currentMetodo, setCurrentMetodo] = useState<MetodoPago>("efectivo");
+  const [montoIngresado, setMontoIngresado] = useState<string>("");
+  const [efectivoRecibido, setEfectivoRecibido] = useState<string>("");
+  const [clienteFiado, setClienteFiado] = useState<string>("");
   const [saleCompleted, setSaleCompleted] = useState<boolean>(false);
 
   const fetchData = async () => {
@@ -118,7 +136,6 @@ export default function HomePOS() {
     setLoading(false);
   };
 
-  // FIX: Cocina únicamente consulta lo que esté explícitamente PENDIENTE DE SERVIR
   const fetchPedidosCocina = async () => {
     const { data } = await supabase
       .from("pedidos")
@@ -140,6 +157,9 @@ export default function HomePOS() {
     setInitialItemsCount(0);
     setShowCheckout(false);
     setSaleCompleted(false);
+    setPagos([]);
+    setMontoIngresado("");
+    setEfectivoRecibido("");
     setClienteFiado("");
 
     const { data: pedido } = await supabase
@@ -173,6 +193,7 @@ export default function HomePOS() {
   };
 
   const addToCart = (producto: Producto) => {
+    if (vista === "caja") return; // Restricción: El cajero no puede tomar pedidos
     setCart((prev) => {
       const isAdicion = initialItemsCount > 0;
       const existing = prev.find(
@@ -191,6 +212,7 @@ export default function HomePOS() {
   };
 
   const updateQuantity = (productoId: number, delta: number, esAdicion: boolean = false) => {
+    if (vista === "caja") return; // Restricción: El cajero no modifica cantidades
     setCart((prev) =>
       prev
         .map((item) => {
@@ -213,8 +235,60 @@ export default function HomePOS() {
 
   const finalTotal = useMemo(() => Math.max(0, subtotalAmount - discountVal), [subtotalAmount, discountVal]);
 
+  const totalPagado = useMemo(() => pagos.reduce((acc, p) => acc + p.monto, 0), [pagos]);
+  const saldoPendiente = useMemo(() => Math.max(0, finalTotal - totalPagado), [finalTotal, totalPagado]);
+
+  // Función para agregar un pago parcial o dividido
+  const handleAgregarPago = () => {
+    const monto = Number(montoIngresado);
+    if (!monto || monto <= 0) {
+      alert("Ingresa un monto válido a pagar.");
+      return;
+    }
+
+    if (currentMetodo === "efectivo") {
+      const recibido = Number(efectivoRecibido);
+      if (recibido < monto) {
+        alert("El dinero en efectivo recibido es menor al monto a pagar asignado.");
+        return;
+      }
+      const cambio = recibido - monto;
+      setPagos((prev) => [
+        ...prev,
+        {
+          metodo: "efectivo",
+          monto,
+          montoEntregadoEfectivo: recibido,
+          cambioEfectivo: cambio,
+        },
+      ]);
+    } else if (currentMetodo === "fiado") {
+      if (!clienteFiado.trim()) {
+        alert("Debes indicar el nombre de la persona a la que le vas a fiar.");
+        return;
+      }
+      setPagos((prev) => [
+        ...prev,
+        {
+          metodo: "fiado",
+          monto,
+          clienteFiado: clienteFiado.trim(),
+        },
+      ]);
+    } else {
+      setPagos((prev) => [...prev, { metodo: currentMetodo, monto }]);
+    }
+
+    setMontoIngresado("");
+    setEfectivoRecibido("");
+  };
+
+  const handleEliminarPago = (index: number) => {
+    setPagos((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleSaveOrder = async () => {
-    if (!selectedMesa) return;
+    if (!selectedMesa || vista === "caja") return;
 
     await supabase.from("mesas").update({ estado: "pendiente_servir" }).eq("id", selectedMesa.id);
 
@@ -293,8 +367,8 @@ export default function HomePOS() {
   const handleFinalizeSale = async () => {
     if (!selectedMesa) return;
 
-    if (paymentMethod === "fiado" && !clienteFiado.trim()) {
-      alert("Por favor ingresa el nombre de la persona a la que le vas a fiar.");
+    if (saldoPendiente > 0) {
+      alert(`No se puede liberar la mesa. Aún hay un saldo pendiente de $${saldoPendiente.toLocaleString()}`);
       return;
     }
 
@@ -304,11 +378,14 @@ export default function HomePOS() {
       precio: i.producto.precio,
     }));
 
+    const fiadoItem = pagos.find((p) => p.metodo === "fiado");
+
     await supabase.from("ventas").insert({
       mesa_id: selectedMesa.id,
       numero_mesa: selectedMesa.numero,
-      metodo_pago: paymentMethod,
-      cliente_nombre: paymentMethod === "fiado" ? clienteFiado.trim() : null,
+      metodo_pago: pagos.map((p) => p.metodo).join(", "),
+      desglose_pagos: pagos,
+      cliente_nombre: fiadoItem ? fiadoItem.clienteFiado : null,
       subtotal: subtotalAmount,
       descuento: discountVal,
       total: finalTotal,
@@ -341,7 +418,7 @@ export default function HomePOS() {
           </div>
           <div>
             <h1 className="text-lg sm:text-2xl font-black tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-pink-400 via-purple-300 to-cyan-300 uppercase">
-              Heladería POS
+              Anti Café POS
             </h1>
             <p className="text-[10px] sm:text-xs font-bold text-slate-400 flex items-center gap-1">
               <Sparkles className="w-3 h-3 text-pink-400" /> Control Integral de Servicio
@@ -549,6 +626,7 @@ export default function HomePOS() {
             </main>
           ) : (
             <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
+              {/* MENÚ PRODUCTOS (CON RESTRICCIÓN PARA MODO CAJA) */}
               <div className="flex-1 p-4 sm:p-6 overflow-y-auto space-y-4 pb-32 lg:pb-6">
                 <div className="flex items-center justify-between gap-3">
                   <button onClick={() => setSelectedMesa(null)} className="px-4 py-2 bg-slate-900 border border-slate-800 rounded-2xl text-xs font-black text-slate-300 flex items-center gap-2 cursor-pointer">
@@ -563,9 +641,21 @@ export default function HomePOS() {
                   />
                 </div>
 
+                {vista === "caja" && (
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-300 text-xs font-bold flex items-center gap-2">
+                    <Lock className="w-4 h-4" /> Modo Caja Activo: Vista de solo lectura. Para modificar o tomar pedidos cambia a la vista Mesero.
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5">
                   {filteredProducts.map((p) => (
-                    <div key={p.id} onClick={() => addToCart(p)} className="bg-slate-900/90 border border-slate-800 p-4 rounded-3xl cursor-pointer hover:border-pink-500/50 flex flex-col justify-between">
+                    <div
+                      key={p.id}
+                      onClick={() => addToCart(p)}
+                      className={`bg-slate-900/90 border border-slate-800 p-4 rounded-3xl flex flex-col justify-between ${
+                        vista === "mesero" ? "cursor-pointer hover:border-pink-500/50" : "opacity-60 cursor-not-allowed"
+                      }`}
+                    >
                       <div>
                         <span className="text-[9px] font-black uppercase text-pink-400 bg-pink-500/10 px-2 py-0.5 rounded-full">{p.categoria}</span>
                         <h4 className="font-black text-sm text-white mt-1.5">{p.nombre}</h4>
@@ -573,13 +663,16 @@ export default function HomePOS() {
                       </div>
                       <div className="mt-4 pt-2 border-t border-slate-800 flex justify-between items-center">
                         <span className="font-black text-sm text-emerald-400 font-mono">${p.precio.toLocaleString()}</span>
-                        <span className="w-7 h-7 rounded-lg bg-pink-500/20 text-pink-400 font-black flex items-center justify-center">+</span>
+                        {vista === "mesero" && (
+                          <span className="w-7 h-7 rounded-lg bg-pink-500/20 text-pink-400 font-black flex items-center justify-center">+</span>
+                        )}
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
 
+              {/* PANEL COMANDA DE LA MESA */}
               <div className="w-full lg:w-96 bg-slate-900/95 border-t lg:border-l border-slate-800 p-5 flex flex-col justify-between shadow-2xl">
                 <div>
                   <h2 className="font-black text-lg text-white flex items-center gap-2 pb-3 border-b border-slate-800">
@@ -595,11 +688,15 @@ export default function HomePOS() {
                           </h5>
                           <p className="text-[11px] text-slate-400 font-mono">${item.producto.precio.toLocaleString()}</p>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => updateQuantity(item.producto.id, -1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black"><Minus className="w-3 h-3" /></button>
-                          <span className="font-black text-xs text-white">{item.cantidad}</span>
-                          <button onClick={() => updateQuantity(item.producto.id, 1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black"><Plus className="w-3 h-3" /></button>
-                        </div>
+                        {vista === "mesero" ? (
+                          <div className="flex items-center gap-2">
+                            <button onClick={() => updateQuantity(item.producto.id, -1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black"><Minus className="w-3 h-3" /></button>
+                            <span className="font-black text-xs text-white">{item.cantidad}</span>
+                            <button onClick={() => updateQuantity(item.producto.id, 1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black"><Plus className="w-3 h-3" /></button>
+                          </div>
+                        ) : (
+                          <span className="font-black text-xs text-slate-300">x{item.cantidad}</span>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -610,9 +707,15 @@ export default function HomePOS() {
                     <span>TOTAL</span>
                     <span className="font-mono text-emerald-400">${subtotalAmount.toLocaleString()}</span>
                   </div>
-                  <button onClick={handleSaveOrder} disabled={cart.length === 0} className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase rounded-2xl shadow flex items-center justify-center gap-2 cursor-pointer active:scale-95">
-                    <ChefHat className="w-5 h-5" /> Enviar a Cocina
-                  </button>
+                  {vista === "mesero" ? (
+                    <button onClick={handleSaveOrder} disabled={cart.length === 0} className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase rounded-2xl shadow flex items-center justify-center gap-2 cursor-pointer active:scale-95">
+                      <ChefHat className="w-5 h-5" /> Enviar a Cocina
+                    </button>
+                  ) : (
+                    <button onClick={() => setShowCheckout(true)} disabled={cart.length === 0} className="w-full py-3.5 bg-pink-500 hover:bg-pink-400 text-white font-black text-xs uppercase rounded-2xl shadow flex items-center justify-center gap-2 cursor-pointer active:scale-95">
+                      <CreditCard className="w-5 h-5" /> Ir al Módulo de Cobro
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -620,19 +723,22 @@ export default function HomePOS() {
         </>
       )}
 
-      {/* MODAL COBRO EN CAJA */}
+      {/* MODAL COBRO EN CAJA INTELIGENTE */}
       {showCheckout && selectedMesa && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-lg w-full shadow-2xl relative max-h-[90vh] overflow-y-auto">
             {!saleCompleted ? (
               <>
                 <div className="flex justify-between items-center mb-4 pb-3 border-b border-slate-800">
-                  <h3 className="font-black text-lg text-white flex items-center gap-2">💳 Cobrar - {selectedMesa.nombre}</h3>
+                  <h3 className="font-black text-lg text-white flex items-center gap-2">
+                    <Calculator className="w-5 h-5 text-pink-400" /> Cobrar - {selectedMesa.nombre}
+                  </h3>
                   <button onClick={() => setShowCheckout(false)} className="w-8 h-8 rounded-xl bg-slate-800 text-slate-400 flex items-center justify-center">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
 
+                {/* RESUMEN CONSUMO */}
                 <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-3 max-h-48 overflow-y-auto pr-1">
                   {cartIniciales.length > 0 && (
                     <div>
@@ -667,74 +773,185 @@ export default function HomePOS() {
                   )}
                 </div>
 
+                {/* APLICACIÓN DE DESCUENTO */}
+                <div className="bg-slate-950/60 p-3 rounded-2xl border border-slate-800 mb-4 flex items-center justify-between gap-3">
+                  <span className="text-xs font-bold text-slate-300 flex items-center gap-1">
+                    <DollarSign className="w-4 h-4 text-emerald-400" /> Descuento:
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={discountInput}
+                      onChange={(e) => setDiscountInput(e.target.value)}
+                      className="w-20 px-2 py-1 bg-slate-900 border border-slate-800 rounded-lg text-xs font-bold text-right text-white"
+                    />
+                    <select
+                      value={discountType}
+                      onChange={(e) => setDiscountType(e.target.value as any)}
+                      className="bg-slate-900 border border-slate-800 text-xs font-bold text-white rounded-lg px-2 py-1"
+                    >
+                      <option value="monto">$</option>
+                      <option value="porcentaje">%</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* TOTALES */}
                 <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-1.5">
                   <div className="flex justify-between text-xs font-bold text-slate-400">
                     <span>Subtotal:</span>
                     <span className="font-mono">${subtotalAmount.toLocaleString()}</span>
                   </div>
+                  {discountVal > 0 && (
+                    <div className="flex justify-between text-xs font-bold text-rose-400">
+                      <span>Descuento aplicado:</span>
+                      <span className="font-mono">-${discountVal.toLocaleString()}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between text-xl font-black text-emerald-400 pt-2 border-t border-slate-800">
                     <span>TOTAL FINAL:</span>
                     <span className="font-mono">${finalTotal.toLocaleString()}</span>
                   </div>
                 </div>
 
-                {/* BOTONES DE MÉTODO DE PAGO */}
-                <div className="space-y-3 mb-4">
-                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                {/* SECCIÓN CAJA INTELIGENTE - MÉTODOS Y CÁLCULO */}
+                <div className="bg-slate-950 p-4 rounded-2xl border border-pink-500/30 mb-4 space-y-3">
+                  <h4 className="text-xs font-black text-pink-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Wallet className="w-4 h-4 text-pink-400" /> Registrar Forma de Pago
+                  </h4>
+
+                  <div className="grid grid-cols-5 gap-1.5">
                     {(["efectivo", "nequi", "daviplata", "tarjeta", "fiado"] as const).map((m) => (
                       <button
                         key={m}
-                        onClick={() => setPaymentMethod(m)}
-                        className={`py-2 rounded-xl text-[10px] font-black uppercase transition-all border flex flex-col items-center justify-center gap-1 cursor-pointer ${
-                          paymentMethod === m
-                            ? m === "fiado"
-                              ? "bg-amber-500 text-slate-950 border-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.5)]"
-                              : "bg-pink-500 text-white border-pink-400 shadow-[0_0_10px_rgba(236,72,153,0.4)]"
-                            : "bg-slate-950 text-slate-400 border-slate-800"
+                        onClick={() => setCurrentMetodo(m)}
+                        className={`py-2 rounded-xl text-[10px] font-black uppercase transition-all border ${
+                          currentMetodo === m
+                            ? "bg-pink-500 text-white border-pink-400 shadow-[0_0_10px_rgba(236,72,153,0.4)]"
+                            : "bg-slate-900 text-slate-400 border-slate-800"
                         }`}
                       >
-                        {m === "fiado" && <BookOpenCheck className="w-3.5 h-3.5" />}
                         {m}
                       </button>
                     ))}
                   </div>
 
-                  {paymentMethod === "fiado" && (
-                    <div className="bg-amber-950/30 border border-amber-500/50 p-3 rounded-2xl space-y-1.5 animate-fadeIn">
-                      <label className="text-[11px] font-black text-amber-300 flex items-center gap-1.5">
-                        <User className="w-3.5 h-3.5 text-amber-400" /> Nombre del Cliente a Fiar:
-                      </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 block mb-1">Monto a Asignar:</label>
                       <input
-                        type="text"
-                        placeholder="Ej: Carlos Ruiz, Juan, Doña María..."
-                        value={clienteFiado}
-                        onChange={(e) => setClienteFiado(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-400"
-                        autoFocus
+                        type="number"
+                        placeholder={`Ej: ${saldoPendiente}`}
+                        value={montoIngresado}
+                        onChange={(e) => setMontoIngresado(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-pink-500"
                       />
+                    </div>
+
+                    {currentMetodo === "efectivo" && (
+                      <div>
+                        <label className="text-[10px] font-black text-amber-400 block mb-1">Billete Entregado:</label>
+                        <input
+                          type="number"
+                          placeholder="Ej: 20000, 50000"
+                          value={efectivoRecibido}
+                          onChange={(e) => setEfectivoRecibido(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-900 border border-amber-500/40 rounded-xl text-xs font-bold text-amber-300 focus:outline-none"
+                        />
+                      </div>
+                    )}
+
+                    {currentMetodo === "fiado" && (
+                      <div className="col-span-2">
+                        <label className="text-[10px] font-black text-amber-400 block mb-1">Nombre del Cliente (Fiado):</label>
+                        <input
+                          type="text"
+                          placeholder="Ej: Carlos Ruiz, Doña María..."
+                          value={clienteFiado}
+                          onChange={(e) => setClienteFiado(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-900 border border-amber-500/40 rounded-xl text-xs font-bold text-white focus:outline-none"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {currentMetodo === "efectivo" && Number(efectivoRecibido) > 0 && Number(montoIngresado) > 0 && (
+                    <div className="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-xl flex justify-between items-center text-xs font-black text-amber-300">
+                      <span>Devuelta / Cambio:</span>
+                      <span className="font-mono text-sm">
+                        ${Math.max(0, Number(efectivoRecibido) - Number(montoIngresado)).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleAgregarPago}
+                    className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white font-black text-xs uppercase rounded-xl border border-slate-700 transition-all cursor-pointer"
+                  >
+                    + Agregar Pago
+                  </button>
+                </div>
+
+                {/* DESGLOSE DE PAGOS INGRESADOS */}
+                {pagos.length > 0 && (
+                  <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-2">
+                    <h4 className="text-[10px] font-black text-slate-400 uppercase">Pagos Registrados:</h4>
+                    {pagos.map((p, idx) => (
+                      <div key={idx} className="flex justify-between items-center text-xs font-bold bg-slate-900 p-2 rounded-xl border border-slate-800">
+                        <div>
+                          <span className="uppercase text-pink-400">{p.metodo}</span>: ${p.monto.toLocaleString()}
+                          {p.cambioEfectivo !== undefined && (
+                            <span className="text-[10px] text-amber-300 block">
+                              Recibido: ${p.montoEntregadoEfectivo?.toLocaleString()} | Cambio: ${p.cambioEfectivo.toLocaleString()}
+                            </span>
+                          )}
+                          {p.clienteFiado && (
+                            <span className="text-[10px] text-amber-400 block">Fiado a: {p.clienteFiado}</span>
+                          )}
+                        </div>
+                        <button onClick={() => handleEliminarPago(idx)} className="text-rose-400 hover:text-white p-1">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ALERTA DE SALDO / DEUDA */}
+                <div className="mb-4">
+                  {saldoPendiente > 0 ? (
+                    <div className="p-3 bg-rose-500/10 border border-rose-500/40 rounded-2xl flex items-center justify-between text-xs font-black text-rose-400">
+                      <span className="flex items-center gap-1">
+                        <AlertCircle className="w-4 h-4" /> SALDO PENDIENTE / DEUDA:
+                      </span>
+                      <span className="font-mono text-sm">${saldoPendiente.toLocaleString()}</span>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-emerald-500/10 border border-emerald-500/40 rounded-2xl flex items-center justify-between text-xs font-black text-emerald-400">
+                      <span className="flex items-center gap-1">
+                        <CheckCircle2 className="w-4 h-4" /> COMPRA TOTALMENTE CUBIERTA
+                      </span>
                     </div>
                   )}
                 </div>
 
                 <button
                   onClick={handleFinalizeSale}
-                  className={`w-full py-3.5 font-black uppercase text-xs rounded-2xl shadow-lg cursor-pointer active:scale-95 text-slate-950 ${
-                    paymentMethod === "fiado"
-                      ? "bg-gradient-to-r from-amber-400 to-orange-400 hover:from-amber-300 hover:to-orange-300"
-                      : "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400"
+                  disabled={saldoPendiente > 0}
+                  className={`w-full py-3.5 font-black uppercase text-xs rounded-2xl shadow-lg cursor-pointer transition-all ${
+                    saldoPendiente > 0
+                      ? "bg-slate-800 text-slate-500 cursor-not-allowed"
+                      : "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 active:scale-95 shadow-[0_0_20px_rgba(16,185,129,0.4)]"
                   }`}
                 >
-                  {paymentMethod === "fiado" ? "📌 Registrar Cuenta Fiada (Liberar Mesa)" : "✅ Cobrar y Finalizar Venta"}
+                  {saldoPendiente > 0 ? "⚠️ Pago Incompleto (No se puede liberar mesa)" : "✅ Finalizar Venta y Liberar Mesa"}
                 </button>
               </>
             ) : (
               <div className="text-center py-6 space-y-4">
                 <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto animate-bounce" />
-                <h3 className="font-black text-xl text-white">
-                  {paymentMethod === "fiado"
-                    ? `¡Cuenta Fiada Registrada a ${clienteFiado}! (Mesa Liberada)`
-                    : "¡Venta Registrada!"}
-                </h3>
+                <h3 className="font-black text-xl text-white">¡Venta Registrada Exitosamente!</h3>
+                <p className="text-xs text-slate-400">La mesa ha sido liberada correctamente en el sistema.</p>
                 <button onClick={() => { setShowCheckout(false); setSelectedMesa(null); }} className="w-full py-3 bg-pink-500 text-white font-black uppercase text-xs rounded-2xl cursor-pointer">
                   Volver al Mapa
                 </button>
