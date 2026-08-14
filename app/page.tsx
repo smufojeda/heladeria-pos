@@ -411,9 +411,9 @@ export default function HomePOS() {
   const cartAdiciones = useMemo(() => cart.filter((i) => i.es_adicion), [cart]);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased flex flex-col selection:bg-pink-500 selection:text-white">
+    <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans antialiased flex flex-col selection:bg-pink-500 selection:text-white">
       {/* HEADER */}
-      <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-pink-500/30 px-4 sm:px-8 py-3.5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-2xl">
+      <header className="shrink-0 bg-slate-900/95 backdrop-blur-md border-b border-pink-500/30 px-4 sm:px-8 py-3.5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-2xl z-40">
         <div className="flex items-center gap-3">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-pink-500 to-purple-600 p-1 flex items-center justify-center text-white shadow-[0_0_20px_rgba(236,72,153,0.5)]">
             <img src="/cafe.png" alt="Logo Café" className="w-full h-full object-contain rounded-xl" />
@@ -470,7 +470,7 @@ export default function HomePOS() {
 
       {/* VISTA COCINA */}
       {vista === "cocina" && (
-        <main className="flex-1 p-4 sm:p-8 max-w-7xl mx-auto w-full">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-8 max-w-7xl mx-auto w-full">
           <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2 mb-6">
             <ChefHat className="w-7 h-7 text-amber-400" /> Pedidos de Cocina ({pedidosCocina.length})
           </h2>
@@ -566,7 +566,7 @@ export default function HomePOS() {
       {vista !== "cocina" && (
         <>
           {!selectedMesa ? (
-            <main className="flex-1 p-4 sm:p-8 max-w-7xl mx-auto w-full">
+            <main className="flex-1 overflow-y-auto p-4 sm:p-8 max-w-7xl mx-auto w-full">
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 sm:gap-6">
                 {mesas.map((mesa) => {
                   const isLibre = mesa.estado === "libre";
@@ -633,13 +633,13 @@ export default function HomePOS() {
               </div>
             </main>
           ) : (
-            <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
+            <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative h-full">
               
               {/* CONTENEDOR PRINCIPAL IZQUIERDO (PRODUCTOS Y BUSCADOR) */}
-              <div className="flex-1 flex flex-col h-full overflow-hidden">
+              <div className="flex-1 flex flex-col h-full overflow-hidden relative">
                 
                 {/* 1er MENÚ FIJO EN LA PARTE SUPERIOR (BUSCADOR, VOLVER Y CATEGORÍAS) */}
-                <div className="sticky top-0 z-20 bg-slate-900 border-b border-slate-800 p-3 sm:p-4 shadow-md space-y-2">
+                <div className="shrink-0 bg-slate-900 border-b border-slate-800 p-3 sm:p-4 shadow-md space-y-2 z-20">
                   <div className="flex items-center justify-between gap-2">
                     <button
                       onClick={() => setSelectedMesa(null)}
