@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ShoppingBag,
@@ -36,9 +35,9 @@ import {
   Edit2,
   PlusCircle,
   AlertTriangle,
-  FileText,
   Pencil,
-  RotateCcw
+  RotateCcw,
+  UserCheck
 } from "lucide-react";
 
 type EstadoMesa = "libre" | "pendiente_servir" | "preparado" | "servido" | "pendiente_pago";
@@ -102,7 +101,6 @@ interface CierreDiario {
   estado: "abierto" | "cerrado";
 }
 
-// Formateador universal con separadores de miles es-CO
 const formatCurrency = (amount: number | string | undefined | null) => {
   if (amount === undefined || amount === null || amount === "") return "0";
   const numericValue = typeof amount === "string" ? Number(amount.replace(/\D/g, "")) : amount;
@@ -110,14 +108,12 @@ const formatCurrency = (amount: number | string | undefined | null) => {
   return numericValue.toLocaleString("es-CO");
 };
 
-// Convierte string formateado a número
 const parseCurrencyToNumber = (formattedStr: string): number => {
   if (!formattedStr) return 0;
   const cleanStr = formattedStr.replace(/\D/g, "");
   return Number(cleanStr) || 0;
 };
 
-// Genera el nombre por defecto de la mesa según su índice
 const getNombreOriginal = (numero: number, idx: number) => {
   if (idx < 5) return `Mesa ${idx + 1}`;
   if (idx === 5) return "Barra 1";
@@ -141,7 +137,6 @@ export default function HomePOS() {
   const [initialItemsCount, setInitialItemsCount] = useState<number>(0);
   const [showMobileCart, setShowMobileCart] = useState(false);
 
-  // Modal Caja
   const [showCheckout, setShowCheckout] = useState(false);
   const [discountInput, setDiscountInput] = useState<string>("0");
   const [discountType, setDiscountType] = useState<"monto" | "porcentaje">("monto");
@@ -153,10 +148,9 @@ export default function HomePOS() {
   const [clienteFiado, setClienteFiado] = useState<string>("");
   const [saleCompleted, setSaleCompleted] = useState<boolean>(false);
 
-  // ESTADOS PIN ADMIN, MENÚ FLOTANTE Y APERTURA/CIERRE DE DÍA
   const [showAdminPinModal, setShowAdminPinModal] = useState(false);
   const [pinInput, setPinInput] = useState("");
-  const [showFloatingMenu, setShowFloatingMenu] = useState(false);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
 
   const [cierreActivo, setCierreActivo] = useState<CierreDiario | null>(null);
   const [showAperturaModal, setShowAperturaModal] = useState(false);
@@ -170,6 +164,8 @@ export default function HomePOS() {
   const [gastoMonto, setGastoMonto] = useState("");
 
   const [showCobroTurnoModal, setShowCobroTurnoModal] = useState(false);
+  const [nombreEmpleadoTurno, setNombreEmpleadoTurno] = useState("");
+  const [montoCobroTurnoInput, setMontoCobroTurnoInput] = useState("");
 
   const [showCierreModal, setShowCierreModal] = useState(false);
   const [efectivoCierreInput, setEfectivoCierreInput] = useState("");
@@ -177,14 +173,14 @@ export default function HomePOS() {
   const [razonDiferencia, setRazonDiferencia] = useState("");
   const [resumenCierre, setResumenCierre] = useState<any>(null);
 
-  // ESTADOS PARA RENOMBRAR / RESERVAR MESA
   const [mesaAEditar, setMesaAEditar] = useState<{ id: number; nombre: string; original: string } | null>(null);
   const [nuevoNombreMesa, setNuevoNombreMesa] = useState("");
 
-  // ESTADO PARA CREAR MESAS DINÁMICAS
   const [showCrearMesaModal, setShowCrearMesaModal] = useState(false);
   const [tipoNuevoEspacio, setTipoNuevoEspacio] = useState<"mesa" | "barra">("mesa");
   const [nombreNuevoEspacio, setNombreNuevoEspacio] = useState("");
+
+  const [addedToast, setAddedToast] = useState<string | null>(null);
 
   const categories = useMemo(() => {
     const cats = new Set(productos.map((p) => p.categoria).filter(Boolean));
@@ -238,7 +234,6 @@ export default function HomePOS() {
     };
   }, []);
 
-  // CREAR Y ELIMINAR MESAS ADICIONALES
   const handleCrearMesa = async () => {
     const maxNumero = mesas.reduce((max, m) => (m.numero > max ? m.numero : max), 0);
     const nuevoNumero = maxNumero + 1;
@@ -272,7 +267,6 @@ export default function HomePOS() {
     }
   };
 
-  // FUNCIONES PARA CAMBIAR NOMBRE DE MESA / RESTABLECER
   const handleOpenEditNombre = (mesa: Mesa, idx: number, e: React.MouseEvent) => {
     e.stopPropagation();
     const nombreOrig = getNombreOriginal(mesa.numero, idx);
@@ -329,6 +323,8 @@ export default function HomePOS() {
         total_tarjeta: 0,
         total_fiado: 0,
         total_gastos: 0,
+        cobro_turno: 0,
+        empleado_turno: "",
         estado: "abierto"
       })
       .select()
@@ -338,8 +334,18 @@ export default function HomePOS() {
       setCierreActivo(data as CierreDiario);
       setShowAperturaModal(false);
       setShowAperturaRequeridaModal(false);
-      setShowFloatingMenu(false);
+      setShowHeaderMenu(false);
       setMontoInicialFormatted("");
+
+      try {
+        await supabase.from("caja_estado").upsert({
+          id: 1,
+          abierta: true,
+          monto_inicial: monto,
+          fecha_apertura: fechaApertura
+        });
+      } catch (_) {}
+
       alert("✅ ¡Día abierto exitosamente!");
     } else {
       console.error("Error al abrir día:", error);
@@ -348,13 +354,15 @@ export default function HomePOS() {
   };
 
   const handleAddGastoInsumos = async () => {
+    if (!cierreActivo) return alert("Debes abrir el día primero.");
     if (!gastoDesc.trim() || !gastoMonto) return alert("Completa los campos del gasto.");
     const montoVal = parseCurrencyToNumber(gastoMonto);
     const hoy = new Date().toISOString().split("T")[0];
 
     await supabase.from("gastos").insert({
+      cierre_diario_id: cierreActivo.id,
       fecha: hoy,
-      descripcion: `[INSUMOS] ${gastoDesc.trim()}`,
+      descripcion: gastoDesc.trim(),
       monto: montoVal,
       created_at: new Date().toISOString()
     });
@@ -362,15 +370,20 @@ export default function HomePOS() {
     setGastoDesc("");
     setGastoMonto("");
     setShowGastoModal(false);
-    setShowFloatingMenu(false);
+    setShowHeaderMenu(false);
     alert("✅ Gasto de insumos guardado correctamente.");
   };
 
   const calcularTotalesTurno = async () => {
-    const fechaHoy = cierreActivo?.fecha || new Date().toISOString().split("T")[0];
+    if (!cierreActivo) {
+      return {
+        tEfectivo: 0, tNequi: 0, tDaviplata: 0, tTarjeta: 0, tFiado: 0,
+        tTransferencias: 0, tGastos: 0, baseInicial: 0, cobroTurno: 0, totalCajaEsperado: 0
+      };
+    }
     
-    const { data: ventasDia } = await supabase.from("ventas").select("*").gte("created_at", `${fechaHoy}T00:00:00`);
-    const { data: gastosDia } = await supabase.from("gastos").select("*").gte("created_at", `${fechaHoy}T00:00:00`);
+    const { data: ventasDia } = await supabase.from("ventas").select("*").eq("cierre_diario_id", cierreActivo.id);
+    const { data: gastosDia } = await supabase.from("gastos").select("*").eq("cierre_diario_id", cierreActivo.id);
 
     let tEfectivo = 0, tNequi = 0, tDaviplata = 0, tTarjeta = 0, tFiado = 0;
 
@@ -395,7 +408,9 @@ export default function HomePOS() {
 
     const tGastos = (gastosDia || []).reduce((acc: number, g: any) => acc + (g.monto || 0), 0);
     const baseInicial = cierreActivo?.monto_inicial || 0;
-    const totalCajaEsperado = tEfectivo + baseInicial - tGastos;
+    const cobroTurno = parseCurrencyToNumber(montoCobroTurnoInput);
+
+    const totalCajaEsperado = Math.max(0, tEfectivo + baseInicial - tGastos - cobroTurno);
 
     return {
       tEfectivo,
@@ -406,6 +421,7 @@ export default function HomePOS() {
       tTransferencias: tNequi + tDaviplata,
       tGastos,
       baseInicial,
+      cobroTurno,
       totalCajaEsperado
     };
   };
@@ -418,16 +434,18 @@ export default function HomePOS() {
     const res = await calcularTotalesTurno();
     setResumenCierre(res);
     setShowCierreModal(true);
-    setShowFloatingMenu(false);
+    setShowHeaderMenu(false);
   };
 
-  const handleValidarCierreEfectivo = () => {
+  const handleValidarCierreEfectivo = async () => {
     const valorIngresado = parseCurrencyToNumber(efectivoCierreInput);
+    const res = await calcularTotalesTurno();
+    setResumenCierre(res);
 
-    if (valorIngresado !== resumenCierre.totalCajaEsperado) {
-      const dif = valorIngresado - resumenCierre.totalCajaEsperado;
+    if (valorIngresado !== res.totalCajaEsperado) {
+      const dif = valorIngresado - res.totalCajaEsperado;
       const tipo = dif > 0 ? "mayor" : "menor";
-      if (confirm(`⚠️ El dinero ingresado ($${formatCurrency(valorIngresado)}) es ${tipo} al esperado ($${formatCurrency(resumenCierre.totalCajaEsperado)}). ¿Deseas ingresar la razón de la diferencia?`)) {
+      if (confirm(`⚠️ El dinero ingresado ($${formatCurrency(valorIngresado)}) es ${tipo} al esperado ($${formatCurrency(res.totalCajaEsperado)}). ¿Deseas ingresar la razón de la diferencia?`)) {
         setShowRazonModal(true);
       }
     } else {
@@ -438,26 +456,50 @@ export default function HomePOS() {
   const finalizarCierreDia = async (declarado: number, diferencia: number, razon: string) => {
     if (!cierreActivo) return;
 
-    await supabase.from("cierres_diarios").update({
+    const resCalculado = await calcularTotalesTurno();
+
+    const updatePayload = {
       monto_cierre_declarado: declarado,
-      monto_cierre_esperado: resumenCierre.totalCajaEsperado,
-      diferencia: declarado - resumenCierre.totalCajaEsperado,
+      monto_cierre_esperado: resCalculado.totalCajaEsperado,
+      diferencia: declarado - resCalculado.totalCajaEsperado,
       razon_diferencia: razon,
-      es_cuadrado: (declarado - resumenCierre.totalCajaEsperado) === 0,
-      total_efectivo: resumenCierre.tEfectivo,
-      total_nequi: resumenCierre.tNequi,
-      total_daviplata: resumenCierre.tDaviplata,
-      total_tarjeta: resumenCierre.tTarjeta,
-      total_fiado: resumenCierre.tFiado,
-      total_gastos: resumenCierre.tGastos,
+      es_cuadrado: (declarado - resCalculado.totalCajaEsperado) === 0,
+      total_efectivo: resCalculado.tEfectivo,
+      total_nequi: resCalculado.tNequi,
+      total_daviplata: resCalculado.tDaviplata,
+      total_tarjeta: resCalculado.tTarjeta,
+      total_fiado: resCalculado.tFiado,
+      total_gastos: resCalculado.tGastos,
+      cobro_turno: resCalculado.cobroTurno,
+      empleado_turno: nombreEmpleadoTurno.trim(),
       estado: "cerrado"
-    }).eq("id", cierreActivo.id);
+    };
+
+    const { error } = await supabase
+      .from("cierres_diarios")
+      .update(updatePayload)
+      .eq("id", cierreActivo.id);
+
+    if (error) {
+      alert("Error al finalizar el cierre de día: " + error.message);
+      return;
+    }
+
+    try {
+      await supabase.from("caja_estado").upsert({
+        id: 1,
+        abierta: false,
+        monto_inicial: 0
+      });
+    } catch (_) {}
 
     setCierreActivo(null);
     setShowCierreModal(false);
     setShowRazonModal(false);
     setEfectivoCierreInput("");
     setRazonDiferencia("");
+    setMontoCobroTurnoInput("");
+    setNombreEmpleadoTurno("");
     alert("🎉 ¡Cierre de día guardado con éxito!");
   };
 
@@ -498,6 +540,10 @@ export default function HomePOS() {
 
   const addToCart = (producto: Producto) => {
     if (vista === "caja") return;
+    
+    setAddedToast(`+1 ${producto.nombre}`);
+    setTimeout(() => setAddedToast(null), 1400);
+
     setCart((prev) => {
       const isAdicion = initialItemsCount > 0;
       const existing = prev.find((item) => item.producto.id === producto.id && item.es_adicion === isAdicion);
@@ -631,12 +677,25 @@ export default function HomePOS() {
 
   const handleFinalizeSale = async () => {
     if (!selectedMesa) return;
+    if (!cierreActivo) return alert("⚠️ Se requiere un día abierto para finalizar ventas.");
     if (saldoPendiente > 0) return alert(`No se puede liberar la mesa. Aún hay un saldo pendiente de $${formatCurrency(saldoPendiente)}`);
 
     const itemsSummary = cart.map((i) => ({ nombre: i.producto.nombre, cantidad: i.cantidad, precio: i.producto.precio }));
     const fiadoItem = pagos.find((p) => p.metodo === "fiado");
 
+    for (const item of cart) {
+      if (item.producto.id) {
+        const stockActual = item.producto.stock ?? 50;
+        const nuevoStock = Math.max(0, stockActual - item.cantidad);
+        await supabase
+          .from("productos")
+          .update({ stock: nuevoStock, disponible: nuevoStock > 0 })
+          .eq("id", item.producto.id);
+      }
+    }
+
     await supabase.from("ventas").insert({
+      cierre_diario_id: cierreActivo.id,
       mesa_id: selectedMesa.id,
       numero_mesa: selectedMesa.numero,
       metodo_pago: pagos.map((p) => p.metodo).join(", "),
@@ -648,7 +707,6 @@ export default function HomePOS() {
       items_detalle: itemsSummary,
     });
 
-    // Al finalizar la venta, restablecemos el nombre de la mesa al original
     const idxMesa = mesas.findIndex((m) => m.id === selectedMesa.id);
     const nombreOriginal = idxMesa !== -1 ? getNombreOriginal(selectedMesa.numero, idxMesa) : selectedMesa.nombre;
 
@@ -668,12 +726,18 @@ export default function HomePOS() {
   const cartIniciales = useMemo(() => cart.filter((i) => !i.es_adicion), [cart]);
   const cartAdiciones = useMemo(() => cart.filter((i) => i.es_adicion), [cart]);
 
-  // Se separan las mesas principales (primeras 7) de las adicionales creadas dinámicamente
   const mesasPrincipales = useMemo(() => mesas.slice(0, 7), [mesas]);
   const mesasAdicionales = useMemo(() => mesas.slice(7), [mesas]);
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans antialiased flex flex-col selection:bg-pink-500 selection:text-white relative">
+      {addedToast && (
+        <div className="fixed top-20 right-6 z-50 bg-emerald-500 text-slate-950 font-black px-4 py-2 rounded-2xl shadow-[0_0_20px_rgba(16,185,129,0.7)] flex items-center gap-2 animate-bounce">
+          <Sparkles className="w-4 h-4 text-slate-950" />
+          <span>{addedToast}</span>
+        </div>
+      )}
+
       {/* HEADER */}
       <header className="shrink-0 bg-slate-900/95 backdrop-blur-md border-b border-pink-500/30 px-4 sm:px-8 py-3.5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-2xl z-40">
         <div className="flex items-center gap-3">
@@ -690,7 +754,7 @@ export default function HomePOS() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800/90 w-full md:w-auto justify-center flex-wrap">
+        <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800/90 w-full md:w-auto justify-center flex-wrap relative">
           <button
             onClick={() => { setVista("caja"); setSelectedMesa(null); }}
             className={`flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all cursor-pointer ${
@@ -727,6 +791,44 @@ export default function HomePOS() {
           >
             <ShieldCheck className="w-4 h-4" /> ADMIN
           </button>
+
+          <div className="relative">
+            <button
+              onClick={() => setShowHeaderMenu(!showHeaderMenu)}
+              className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"
+              title="Más Opciones"
+            >
+              <MoreVertical className="w-5 h-5 text-pink-400" />
+            </button>
+
+            {showHeaderMenu && (
+              <div className="absolute right-0 mt-2 bg-slate-900 border border-pink-500/40 p-2 rounded-2xl shadow-2xl flex flex-col gap-1.5 w-52 z-50">
+                <button
+                  onClick={() => { setShowGastoModal(true); setShowHeaderMenu(false); }}
+                  className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  <PlusCircle className="w-4 h-4 text-rose-400" /> 1. Compra de Insumos
+                </button>
+                <button
+                  onClick={async () => {
+                    const res = await calcularTotalesTurno();
+                    setResumenCierre(res);
+                    setShowCobroTurnoModal(true);
+                    setShowHeaderMenu(false);
+                  }}
+                  className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  <DollarSign className="w-4 h-4 text-cyan-400" /> 2. Cobro de Turno
+                </button>
+                <button
+                  onClick={handleOpenCierreModal}
+                  className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  <Lock className="w-4 h-4 text-amber-400" /> 3. Cierre de Día
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -828,9 +930,42 @@ export default function HomePOS() {
       {vista !== "cocina" && (
         <>
           {!selectedMesa ? (
-            <main className="flex-1 overflow-y-auto p-4 sm:p-8 max-w-7xl mx-auto w-full">
+            <main className="flex-1 overflow-y-auto p-4 sm:p-8 max-w-7xl mx-auto w-full space-y-6">
+              <div className={`p-4 rounded-3xl border flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl transition-all ${
+                cierreActivo 
+                  ? "bg-slate-900/90 border-emerald-500/40 text-emerald-300"
+                  : "bg-amber-950/60 border-amber-500/80 text-amber-200 shadow-[0_0_25px_rgba(245,158,11,0.2)]"
+              }`}>
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
+                    cierreActivo ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-400 animate-pulse"
+                  }`}>
+                    {cierreActivo ? <CheckCircle2 className="w-6 h-6" /> : <AlertTriangle className="w-6 h-6" />}
+                  </div>
+                  <div>
+                    <h4 className="font-black text-sm sm:text-base uppercase tracking-wider">
+                      {cierreActivo ? "Jornada Abierta" : "⚠️ Día Sin Abrir"}
+                    </h4>
+                    <p className="text-xs font-bold opacity-80">
+                      {cierreActivo 
+                        ? `Apertura registrada con base de $${formatCurrency(cierreActivo.monto_inicial)}`
+                        : "Debes abrir el día e ingresar la base inicial para operar y enviar pedidos."
+                      }
+                    </p>
+                  </div>
+                </div>
+
+                {!cierreActivo && (
+                  <button
+                    onClick={() => setShowAperturaModal(true)}
+                    className="w-full sm:w-auto px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black text-xs uppercase rounded-2xl shadow-[0_0_15px_rgba(245,158,11,0.4)] transition-all cursor-pointer active:scale-95 shrink-0 flex items-center justify-center gap-2"
+                  >
+                    <Calendar className="w-4 h-4" /> Realizar Apertura
+                  </button>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 sm:gap-6">
-                {/* RENDERING MESAS PRINCIPALES (1 A 7) */}
                 {mesasPrincipales.map((mesa, idx) => {
                   const isLibre = mesa.estado === "libre";
                   const isPendServir = mesa.estado === "pendiente_servir";
@@ -854,7 +989,6 @@ export default function HomePOS() {
                           : "bg-cyan-950/40 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.25)] hover:shadow-[0_0_30px_rgba(6,182,212,0.4)]"
                       }`}
                     >
-                      {/* HEADER TARJETA MESA CON BOTÓN LÁPIZ Y RESTABLECER */}
                       <div className="flex justify-between items-start gap-1 z-10">
                         <div className="flex items-center gap-1.5 flex-wrap max-w-[65%]">
                           <h3 className="font-black text-lg sm:text-xl text-white tracking-wide truncate">
@@ -959,7 +1093,6 @@ export default function HomePOS() {
                   );
                 })}
 
-                {/* BOTÓN / TARJETA PARA CREAR NUEVAS MESAS O BARRAS ADICIONALES (POSICIÓN 8 REEMPLAZANDO A LA MESA 8) */}
                 <div
                   onClick={() => setShowCrearMesaModal(true)}
                   className="group relative rounded-3xl p-5 border-2 border-dashed border-pink-500/60 bg-gradient-to-br from-slate-900/90 via-purple-950/20 to-pink-950/30 hover:border-pink-400 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col items-center justify-center h-64 sm:h-72 shadow-2xl hover:shadow-[0_0_30px_rgba(236,72,153,0.35)] active:scale-95 text-center"
@@ -978,7 +1111,6 @@ export default function HomePOS() {
                   </span>
                 </div>
 
-                {/* RENDERING DE LAS MESAS O BARRAS DINÁMICAS ADICIONALES CREADAS */}
                 {mesasAdicionales.map((mesa, idx) => {
                   const actualIdx = idx + 7;
                   const isLibre = mesa.estado === "libre";
@@ -1158,8 +1290,10 @@ export default function HomePOS() {
                       <div
                         key={p.id}
                         onClick={() => addToCart(p)}
-                        className={`bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl flex flex-col justify-between transition-all ${
-                          vista === "mesero" ? "cursor-pointer hover:border-pink-500/50 active:scale-95" : "opacity-60 cursor-not-allowed"
+                        className={`bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl flex flex-col justify-between transition-all duration-150 select-none ${
+                          vista === "mesero" 
+                            ? "cursor-pointer hover:border-pink-500/50 active:scale-90 active:border-pink-400 active:bg-pink-500/20 shadow-lg" 
+                            : "opacity-60 cursor-not-allowed"
                         }`}
                       >
                         <div>
@@ -1170,7 +1304,7 @@ export default function HomePOS() {
                         <div className="mt-3 pt-2 border-t border-slate-800/80 flex justify-between items-center">
                           <span className="font-black text-xs sm:text-sm text-emerald-400 font-mono">${formatCurrency(p.precio)}</span>
                           {vista === "mesero" && (
-                            <span className="w-6 h-6 rounded-lg bg-pink-500/20 text-pink-400 font-black flex items-center justify-center text-xs">+</span>
+                            <span className="w-6 h-6 rounded-lg bg-pink-500/20 text-pink-400 font-black flex items-center justify-center text-xs transition-transform active:scale-125">+</span>
                           )}
                         </div>
                       </div>
@@ -1278,51 +1412,7 @@ export default function HomePOS() {
         </>
       )}
 
-      {/* BOTÓN FLOTANTE Y MENÚ DESPLEGABLE (...) */}
-      <div className="fixed bottom-6 right-6 z-50">
-        {showFloatingMenu && (
-          <div className="mb-3 bg-slate-900 border border-pink-500/40 p-2 rounded-2xl shadow-2xl flex flex-col gap-1.5 w-52 animate-fadeIn">
-            <button
-              onClick={() => { setShowAperturaModal(true); setShowFloatingMenu(false); }}
-              className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
-            >
-              <Calendar className="w-4 h-4 text-emerald-400" /> 1. Apertura de Día
-            </button>
-            <button
-              onClick={() => { setShowGastoModal(true); setShowFloatingMenu(false); }}
-              className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
-            >
-              <PlusCircle className="w-4 h-4 text-rose-400" /> 2. Compra de Insumos
-            </button>
-            <button
-              onClick={async () => {
-                const res = await calcularTotalesTurno();
-                setResumenCierre(res);
-                setShowCobroTurnoModal(true);
-                setShowFloatingMenu(false);
-              }}
-              className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
-            >
-              <DollarSign className="w-4 h-4 text-cyan-400" /> 3. Cobro de Turno
-            </button>
-            <button
-              onClick={handleOpenCierreModal}
-              className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
-            >
-              <Lock className="w-4 h-4 text-amber-400" /> 4. Cierre de Día
-            </button>
-          </div>
-        )}
-
-        <button
-          onClick={() => setShowFloatingMenu(!showFloatingMenu)}
-          className="w-14 h-14 rounded-full bg-gradient-to-tr from-pink-500 to-purple-600 text-white shadow-[0_0_25px_rgba(236,72,153,0.6)] flex items-center justify-center font-black transition-all hover:scale-110 active:scale-95 cursor-pointer"
-        >
-          <MoreVertical className="w-6 h-6" />
-        </button>
-      </div>
-
-      {/* MODAL CREAR MESA O BARRA ADICIONAL */}
+      {/* MODAL CREAR MESA O BARRA */}
       {showCrearMesaModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-pink-500/40 rounded-3xl p-6 max-w-xs w-full shadow-2xl relative space-y-4">
@@ -1386,7 +1476,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL RENOMBRAR / RESERVAR MESA */}
+      {/* MODAL RENOMBRAR MESA */}
       {mesaAEditar && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-pink-500/40 rounded-3xl p-6 max-w-xs w-full shadow-2xl relative space-y-4">
@@ -1427,7 +1517,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL ADVERTENCIA DE APERTURA REQUERIDA */}
+      {/* MODAL ADVERTENCIA APERTURA REQUERIDA */}
       {showAperturaRequeridaModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-amber-500/50 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative text-center space-y-4">
@@ -1591,28 +1681,64 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL COBRO DE TURNO */}
+      {/* MODAL COBRO DE TURNO MODIFICADO */}
       {showCobroTurnoModal && resumenCierre && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h3 className="font-black text-sm text-white flex items-center gap-2">
-                <DollarSign className="w-4 h-4 text-cyan-400" /> Resumen del Turno
+                <DollarSign className="w-4 h-4 text-cyan-400" /> Cobro de Turno / Empleado
               </h3>
               <button onClick={() => setShowCobroTurnoModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
             </div>
 
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-bold text-slate-400 block mb-1 flex items-center gap-1">
+                  <UserCheck className="w-3.5 h-3.5 text-cyan-400" /> Nombre del Empleado / Mesero:
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ej: Laura, Andrés..."
+                  value={nombreEmpleadoTurno}
+                  onChange={(e) => setNombreEmpleadoTurno(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-400 block mb-1 flex items-center gap-1">
+                  <Calculator className="w-3.5 h-3.5 text-cyan-400" /> Monto a Retirar / Pagar Turno ($):
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ej: 30.000"
+                  value={montoCobroTurnoInput}
+                  onChange={(e) => setMontoCobroTurnoInput(formatCurrency(e.target.value))}
+                  className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm font-black text-cyan-400 font-mono focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+            </div>
+
             <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs font-bold">
-              <div className="flex justify-between text-slate-300"><span>Transferencias (Nequi/Davi):</span><span className="font-mono text-cyan-400">${formatCurrency(resumenCierre.tTransferencias)}</span></div>
+              <div className="flex justify-between text-slate-300"><span>Transferencias:</span><span className="font-mono text-cyan-400">${formatCurrency(resumenCierre.tTransferencias)}</span></div>
               <div className="flex justify-between text-slate-300"><span>Tarjeta:</span><span className="font-mono text-cyan-400">${formatCurrency(resumenCierre.tTarjeta)}</span></div>
               <div className="flex justify-between text-slate-300"><span>Fiado:</span><span className="font-mono text-amber-400">${formatCurrency(resumenCierre.tFiado)}</span></div>
               <div className="flex justify-between text-emerald-300 pt-1 border-t border-slate-900"><span>Efectivo Ventas:</span><span className="font-mono">${formatCurrency(resumenCierre.tEfectivo)}</span></div>
               <div className="flex justify-between text-emerald-300"><span>Base Inicio de Día:</span><span className="font-mono">${formatCurrency(resumenCierre.baseInicial)}</span></div>
               <div className="flex justify-between text-rose-400"><span>Compra Insumos:</span><span className="font-mono">-${formatCurrency(resumenCierre.tGastos)}</span></div>
-              <div className="flex justify-between text-sm font-black text-white pt-2 border-t border-slate-800"><span>Caja Esperada:</span><span className="font-mono text-emerald-400">${formatCurrency(resumenCierre.totalCajaEsperado)}</span></div>
+              {parseCurrencyToNumber(montoCobroTurnoInput) > 0 && (
+                <div className="flex justify-between text-cyan-300"><span>Descuento Turno:</span><span className="font-mono">-${formatCurrency(montoCobroTurnoInput)}</span></div>
+              )}
+              <div className="flex justify-between text-sm font-black text-white pt-2 border-t border-slate-800">
+                <span>Caja Esperada:</span>
+                <span className="font-mono text-emerald-400">${formatCurrency(Math.max(0, resumenCierre.totalCajaEsperado - parseCurrencyToNumber(montoCobroTurnoInput)))}</span>
+              </div>
             </div>
 
-            <button onClick={() => setShowCobroTurnoModal(false)} className="w-full py-2.5 bg-slate-800 text-slate-200 font-black text-xs uppercase rounded-xl">Cerrar Resumen</button>
+            <button onClick={() => setShowCobroTurnoModal(false)} className="w-full py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase rounded-xl transition-all cursor-pointer shadow-lg">
+              Guardar y Cerrar Resumen
+            </button>
           </div>
         </div>
       )}
@@ -1635,6 +1761,9 @@ export default function HomePOS() {
               <div className="flex justify-between text-emerald-400 font-black pt-1 border-t border-slate-900"><span>Efectivo Ventas:</span><span className="font-mono">${formatCurrency(resumenCierre.tEfectivo)}</span></div>
               <div className="flex justify-between text-emerald-400 font-black"><span>Inicio de Día (Base):</span><span className="font-mono">${formatCurrency(resumenCierre.baseInicial)}</span></div>
               <div className="flex justify-between text-rose-400 font-black"><span>Compra de Insumos:</span><span className="font-mono">-${formatCurrency(resumenCierre.tGastos)}</span></div>
+              {parseCurrencyToNumber(montoCobroTurnoInput) > 0 && (
+                <div className="flex justify-between text-cyan-400 font-black"><span>Cobro de Turno ({nombreEmpleadoTurno}):</span><span className="font-mono">-${formatCurrency(montoCobroTurnoInput)}</span></div>
+              )}
               <div className="flex justify-between text-sm font-black text-white pt-2 border-t border-slate-800">
                 <span>TOTAL A TENER EN CAJA:</span>
                 <span className="font-mono text-emerald-400 text-base">${formatCurrency(resumenCierre.totalCajaEsperado)}</span>
@@ -1680,7 +1809,11 @@ export default function HomePOS() {
               className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-rose-500"
             />
             <button
-              onClick={() => finalizarCierreDia(parseCurrencyToNumber(efectivoCierreInput), parseCurrencyToNumber(efectivoCierreInput) - resumenCierre.totalCajaEsperado, razonDiferencia)}
+              onClick={() => {
+                const dec = parseCurrencyToNumber(efectivoCierreInput);
+                const esp = resumenCierre?.totalCajaEsperado || 0;
+                finalizarCierreDia(dec, dec - esp, razonDiferencia);
+              }}
               className="w-full py-3 bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase rounded-xl cursor-pointer"
             >
               Aceptar y Finalizar Cierre
@@ -1689,7 +1822,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL COBRO EN CAJA INTELIGENTE */}
+      {/* MODAL COBRO EN CAJA */}
       {showCheckout && selectedMesa && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-lg w-full shadow-2xl relative max-h-[90vh] overflow-y-auto">
