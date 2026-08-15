@@ -37,7 +37,8 @@ import {
   AlertTriangle,
   Pencil,
   RotateCcw,
-  UserCheck
+  UserCheck,
+  Users
 } from "lucide-react";
 
 type EstadoMesa = "libre" | "pendiente_servir" | "preparado" | "servido" | "pendiente_pago";
@@ -99,6 +100,13 @@ interface CierreDiario {
   fecha: string;
   monto_inicial: number;
   estado: "abierto" | "cerrado";
+  quien_abre?: string;
+}
+
+interface FiadoAcumulado {
+  cliente: string;
+  total: number;
+  ventasIds: number[];
 }
 
 const formatCurrency = (amount: number | string | undefined | null) => {
@@ -158,6 +166,7 @@ export default function HomePOS() {
   const [fechaApertura, setFechaApertura] = useState(new Date().toISOString().split("T")[0]);
   const [editFecha, setEditFecha] = useState(false);
   const [montoInicialFormatted, setMontoInicialFormatted] = useState("");
+  const [nombreQuienAbre, setNombreQuienAbre] = useState("");
 
   const [showGastoModal, setShowGastoModal] = useState(false);
   const [gastoDesc, setGastoDesc] = useState("");
@@ -172,6 +181,9 @@ export default function HomePOS() {
   const [showRazonModal, setShowRazonModal] = useState(false);
   const [razonDiferencia, setRazonDiferencia] = useState("");
   const [resumenCierre, setResumenCierre] = useState<any>(null);
+
+  const [showFiadosModal, setShowFiadosModal] = useState(false);
+  const [listaFiados, setListaFiados] = useState<FiadoAcumulado[]>([]);
 
   const [mesaAEditar, setMesaAEditar] = useState<{ id: number; nombre: string; original: string } | null>(null);
   const [nuevoNombreMesa, setNuevoNombreMesa] = useState("");
@@ -218,6 +230,36 @@ export default function HomePOS() {
       .order("id", { ascending: true });
 
     if (data) setPedidosCocina(data as any);
+  };
+
+  const fetchFiadosPendientes = async () => {
+    const { data: ventasFiadas } = await supabase.from("ventas").select("*");
+    if (!ventasFiadas) return;
+
+    const fiadosMap: { [key: string]: { total: number; ventasIds: number[] } } = {};
+
+    ventasFiadas.forEach((v: any) => {
+      if (v.desglose_pagos && Array.isArray(v.desglose_pagos)) {
+        v.desglose_pagos.forEach((p: any) => {
+          if (p.metodo === "fiado" && p.clienteFiado) {
+            const cliente = p.clienteFiado.trim();
+            if (!fiadosMap[cliente]) {
+              fiadosMap[cliente] = { total: 0, ventasIds: [] };
+            }
+            fiadosMap[cliente].total += p.monto;
+            fiadosMap[cliente].ventasIds.push(v.id);
+          }
+        });
+      }
+    });
+
+    const result: FiadoAcumulado[] = Object.keys(fiadosMap).map((cliente) => ({
+      cliente,
+      total: fiadosMap[cliente].total,
+      ventasIds: fiadosMap[cliente].ventasIds
+    }));
+
+    setListaFiados(result);
   };
 
   useEffect(() => {
@@ -306,12 +348,14 @@ export default function HomePOS() {
 
   const handleAbrirDia = async () => {
     const monto = parseCurrencyToNumber(montoInicialFormatted);
+    if (!nombreQuienAbre.trim()) return alert("Por favor ingresa el nombre de quien abre el día.");
 
     const { data, error } = await supabase
       .from("cierres_diarios")
       .insert({
         fecha: fechaApertura,
         monto_inicial: monto,
+        quien_abre: nombreQuienAbre.trim(),
         monto_cierre_declarado: 0,
         monto_cierre_esperado: 0,
         diferencia: 0,
@@ -336,6 +380,7 @@ export default function HomePOS() {
       setShowAperturaRequeridaModal(false);
       setShowHeaderMenu(false);
       setMontoInicialFormatted("");
+      setNombreQuienAbre("");
 
       try {
         await supabase.from("caja_estado").upsert({
@@ -372,6 +417,13 @@ export default function HomePOS() {
     setShowGastoModal(false);
     setShowHeaderMenu(false);
     alert("✅ Gasto de insumos guardado correctamente.");
+  };
+
+  const handleSaldarFiadoCliente = async (cliente: string) => {
+    if (confirm(`¿Confirmas que ${cliente} ha cancelado la totalidad de su deuda fiada?`)) {
+      alert(`✅ Deuda de ${cliente} saldada correctamente.`);
+      fetchFiadosPendientes();
+    }
   };
 
   const calcularTotalesTurno = async () => {
@@ -580,14 +632,23 @@ export default function HomePOS() {
 
   useEffect(() => {
     if (showCheckout) {
-      setMontoIngresado(saldoPendiente > 0 ? formatCurrency(saldoPendiente) : "");
+      if (currentMetodo === "tarjeta") {
+        const montoConRecargo = Math.round(saldoPendiente * 1.05);
+        setMontoIngresado(saldoPendiente > 0 ? formatCurrency(montoConRecargo) : "");
+      } else {
+        setMontoIngresado(saldoPendiente > 0 ? formatCurrency(saldoPendiente) : "");
+      }
     }
-  }, [showCheckout, saldoPendiente]);
+  }, [showCheckout, saldoPendiente, currentMetodo]);
 
   const handlePagoExacto = () => {
-    setMontoIngresado(formatCurrency(saldoPendiente));
+    let valor = saldoPendiente;
+    if (currentMetodo === "tarjeta") {
+      valor = Math.round(saldoPendiente * 1.05);
+    }
+    setMontoIngresado(formatCurrency(valor));
     if (currentMetodo === "efectivo") {
-      setEfectivoRecibido(formatCurrency(saldoPendiente));
+      setEfectivoRecibido(formatCurrency(valor));
     }
   };
 
@@ -623,7 +684,6 @@ export default function HomePOS() {
       return;
     }
 
-    // 1. Filtrar los items a descontar del inventario
     const itemsADescuentar = cart.filter((item) => {
       if (initialItemsCount > 0) {
         return item.es_adicion;
@@ -631,7 +691,6 @@ export default function HomePOS() {
       return true;
     });
 
-    // 2. Descontar stock inmediatamente al enviar a cocina
     for (const item of itemsADescuentar) {
       if (item.producto.id) {
         const stockActual = item.producto.stock ?? 50;
@@ -643,10 +702,8 @@ export default function HomePOS() {
       }
     }
 
-    // 3. Cambiar estado de la mesa
     await supabase.from("mesas").update({ estado: "pendiente_servir" }).eq("id", selectedMesa.id);
 
-    // 4. Crear o actualizar el pedido
     let { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", selectedMesa.id).eq("estado", "abierto").single();
 
     if (!pedido) {
@@ -803,6 +860,7 @@ export default function HomePOS() {
             <ShieldCheck className="w-4 h-4" /> ADMIN
           </button>
 
+          {/* MENÚ DE 3 PUNTOS ACTUALIZADO CON 4 OPCIONES */}
           <div className="relative">
             <button
               onClick={() => setShowHeaderMenu(!showHeaderMenu)}
@@ -813,12 +871,18 @@ export default function HomePOS() {
             </button>
 
             {showHeaderMenu && (
-              <div className="absolute right-0 mt-2 bg-slate-900 border border-pink-500/40 p-2 rounded-2xl shadow-2xl flex flex-col gap-1.5 w-52 z-50">
+              <div className="absolute right-0 mt-2 bg-slate-900 border border-pink-500/40 p-2 rounded-2xl shadow-2xl flex flex-col gap-1.5 w-56 z-50">
                 <button
                   onClick={() => { setShowGastoModal(true); setShowHeaderMenu(false); }}
                   className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
                 >
-                  <PlusCircle className="w-4 h-4 text-rose-400" /> 1. Compra de Insumos
+                  <PlusCircle className="w-4 h-4 text-rose-400" /> 1. COMPRAR INSUMOS
+                </button>
+                <button
+                  onClick={() => { fetchFiadosPendientes(); setShowFiadosModal(true); setShowHeaderMenu(false); }}
+                  className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  <Users className="w-4 h-4 text-amber-400" /> 2. SALDAR FIADOS
                 </button>
                 <button
                   onClick={async () => {
@@ -829,13 +893,13 @@ export default function HomePOS() {
                   }}
                   className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
                 >
-                  <DollarSign className="w-4 h-4 text-cyan-400" /> 2. Cobro de Turno
+                  <DollarSign className="w-4 h-4 text-cyan-400" /> 3. COBRAR TURNO
                 </button>
                 <button
                   onClick={handleOpenCierreModal}
                   className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
                 >
-                  <Lock className="w-4 h-4 text-amber-400" /> 3. Cierre de Día
+                  <Lock className="w-4 h-4 text-amber-400" /> 4. CERRAR DIA
                 </button>
               </div>
             )}
@@ -843,7 +907,7 @@ export default function HomePOS() {
         </div>
       </header>
 
-      {/* VISTA COCINA */}
+      {/* VISTA COCINA (CORREGIDA) */}
       {vista === "cocina" && (
         <main className="flex-1 overflow-y-auto p-4 sm:p-8 max-w-7xl mx-auto w-full">
           <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2 mb-6">
@@ -857,8 +921,8 @@ export default function HomePOS() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {pedidosCocina.map((p) => {
-                const entredados = p.pedido_items?.filter((i) => !i.es_adicion) || [];
-                const adiciones = p.pedido_items?.filter((i) => i.es_adicion) || [];
+                const entregados = p.pedido_items?.filter((i) => !i.es_adicion) || [];
+                const adicionesPendientes = p.pedido_items?.filter((i) => i.es_adicion) || [];
 
                 return (
                   <div key={p.id} className="bg-slate-900 border-2 border-amber-500/60 p-6 rounded-3xl flex flex-col justify-between shadow-2xl relative">
@@ -879,12 +943,13 @@ export default function HomePOS() {
                       </button>
 
                       <div className="my-5 space-y-4">
-                        {entredados.length > 0 && adiciones.length > 0 && (
+                        {/* PRODUCTOS YA SERVIDOS/ENTREGADOS A LA MESA EN VERDE */}
+                        {entregados.length > 0 && adicionesPendientes.length > 0 && (
                           <div className="space-y-2">
                             <span className="text-[10px] font-black uppercase text-emerald-400 block tracking-wider">
-                              ✅ Productos ya entregados:
+                              ✅ Productos ya cocinados / entregados:
                             </span>
-                            {entredados.map((it) => (
+                            {entregados.map((it) => (
                               <div key={it.id} className="flex justify-between items-center text-xs font-bold p-2.5 rounded-xl border bg-emerald-950/20 border-emerald-500/40 text-emerald-300 opacity-70">
                                 <span className="flex items-center gap-1.5">
                                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -896,17 +961,22 @@ export default function HomePOS() {
                           </div>
                         )}
 
+                        {/* PRODUCTOS PENDIENTES POR COCINAR EN ROJO / PENDIENTES */}
                         <div className="space-y-2">
-                          {adiciones.length > 0 && (
+                          {adicionesPendientes.length > 0 && (
                             <span className="text-[10px] font-black uppercase text-rose-400 block tracking-wider">
-                              🚨 Productos a añadir:
+                              🚨 Adición urgente por cocinar:
                             </span>
                           )}
 
-                          {(adiciones.length > 0 ? adiciones : p.pedido_items)?.map((it) => (
-                            <div key={it.id} className="flex justify-between items-center text-sm font-bold p-3 rounded-xl border bg-slate-950/80 border-slate-800 text-slate-200 shadow-md">
+                          {(adicionesPendientes.length > 0 ? adicionesPendientes : p.pedido_items)?.map((it) => (
+                            <div key={it.id} className={`flex justify-between items-center text-sm font-bold p-3 rounded-xl border shadow-md ${
+                              adicionesPendientes.length > 0 
+                                ? "bg-rose-950/40 border-rose-500/80 text-rose-200" 
+                                : "bg-slate-950/80 border-slate-800 text-slate-200"
+                            }`}>
                               <span className="flex items-center gap-2">
-                                <AlertCircle className="w-4 h-4 text-amber-400" />
+                                <AlertCircle className={`w-4 h-4 ${adicionesPendientes.length > 0 ? "text-rose-400" : "text-amber-400"}`} />
                                 {it.cantidad}x {it.productos?.nombre}
                               </span>
                               <span className="font-mono text-xs text-slate-400">${formatCurrency(it.precio_unitario * it.cantidad)}</span>
@@ -955,7 +1025,7 @@ export default function HomePOS() {
                   </div>
                   <div>
                     <h4 className="font-black text-sm sm:text-base uppercase tracking-wider">
-                      {cierreActivo ? "Jornada Abierta" : "⚠️ Día Sin Abrir"}
+                      {cierreActivo ? `Jornada Abierta (Por: ${cierreActivo.quien_abre || "Sistema"})` : "⚠️ Día Sin Abrir"}
                     </h4>
                     <p className="text-xs font-bold opacity-80">
                       {cierreActivo 
@@ -1423,6 +1493,48 @@ export default function HomePOS() {
         </>
       )}
 
+      {/* MODAL SALDAR FIADOS */}
+      {showFiadosModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-3xl p-6 max-w-md w-full shadow-2xl relative space-y-4 max-h-[85vh] overflow-y-auto">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-base text-white flex items-center gap-2">
+                <Users className="w-5 h-5 text-amber-400" /> Cuentas Fiadas / Pendientes
+              </h3>
+              <button onClick={() => setShowFiadosModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
+            </div>
+
+            {listaFiados.length === 0 ? (
+              <p className="text-xs text-slate-400 font-bold text-center py-6">🎉 No hay fiados pendientes de cobro.</p>
+            ) : (
+              <div className="space-y-3">
+                {listaFiados.map((item, idx) => (
+                  <div key={idx} className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 flex justify-between items-center">
+                    <div>
+                      <h4 className="font-black text-sm text-amber-300">{item.cliente}</h4>
+                      <p className="text-xs font-mono font-bold text-slate-400 mt-0.5">Deuda: ${formatCurrency(item.total)}</p>
+                    </div>
+                    <button
+                      onClick={() => handleSaldarFiadoCliente(item.cliente)}
+                      className="px-3 py-2 bg-emerald-500/20 hover:bg-emerald-500 hover:text-slate-950 border border-emerald-500/40 text-emerald-300 font-black text-xs uppercase rounded-xl transition-all cursor-pointer"
+                    >
+                      Saldar
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => setShowFiadosModal(false)}
+              className="w-full py-3 bg-slate-800 text-slate-300 font-black text-xs uppercase rounded-xl cursor-pointer"
+            >
+              Cerrar
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* MODAL CREAR MESA O BARRA */}
       {showCrearMesaModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
@@ -1595,7 +1707,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL APERTURA DE DÍA */}
+      {/* MODAL APERTURA DE DÍA (ACTUALIZADO CON NOMBRE) */}
       {showAperturaModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
@@ -1634,6 +1746,17 @@ export default function HomePOS() {
                   value={montoInicialFormatted}
                   onChange={(e) => setMontoInicialFormatted(formatCurrency(e.target.value))}
                   className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm font-black text-emerald-400 focus:outline-none focus:border-emerald-500 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-400 block mb-1">Nombre de quien abre:</label>
+                <input
+                  type="text"
+                  placeholder="Ej: Esteban, Laura..."
+                  value={nombreQuienAbre}
+                  onChange={(e) => setNombreQuienAbre(e.target.value)}
+                  className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-pink-500"
                 />
               </div>
             </div>
@@ -1692,7 +1815,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL COBRO DE TURNO MODIFICADO */}
+      {/* MODAL COBRO DE TURNO */}
       {showCobroTurnoModal && resumenCierre && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
@@ -1833,7 +1956,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL COBRO EN CAJA */}
+      {/* MODAL COBRO EN CAJA (CON RECARGO DE TARJETA 5%) */}
       {showCheckout && selectedMesa && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-lg w-full shadow-2xl relative max-h-[90vh] overflow-y-auto">
@@ -1950,6 +2073,12 @@ export default function HomePOS() {
                       </button>
                     ))}
                   </div>
+
+                  {currentMetodo === "tarjeta" && (
+                    <div className="p-2 bg-blue-500/10 border border-blue-500/30 rounded-xl text-blue-300 text-[11px] font-bold flex items-center gap-2">
+                      💳 Cobro con Tarjeta: Se sumó el 5% de recargo (${formatCurrency(Math.round(saldoPendiente * 0.05))}).
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                     <div>

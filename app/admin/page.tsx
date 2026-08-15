@@ -34,7 +34,9 @@ import {
   Lock,
   Unlock,
   LayoutDashboard,
-  UserCheck
+  UserCheck,
+  CreditCard,
+  Filter
 } from "lucide-react";
 
 interface PagoParcial {
@@ -98,6 +100,8 @@ interface CierreDiarioRecord {
   total_gastos: number;
   cobro_turno?: number;
   empleado_turno?: string;
+  quien_abre?: string;
+  recargo_tarjeta?: number;
   estado: string;
 }
 
@@ -112,6 +116,7 @@ interface CierreSemanal {
   total_fiados_pendientes: number;
   ventas_resumen: Venta[];
   gastos_resumen: Gasto[];
+  cierres_diarios_resumen?: CierreDiarioRecord[];
 }
 
 interface EstadoCaja {
@@ -134,6 +139,8 @@ export default function AdminDashboard() {
 
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const [openItems, setOpenItems] = useState<Record<number, boolean>>({});
+  const [openCierres, setOpenCierres] = useState<Record<number, boolean>>({});
+  const [openSemanasFolders, setOpenSemanasFolders] = useState<Record<number, boolean>>({});
 
   const [selectedFiado, setSelectedFiado] = useState<Venta | null>(null);
   const [newPaymentMethod, setNewPaymentMethod] = useState<"efectivo" | "nequi" | "daviplata" | "tarjeta">("efectivo");
@@ -148,6 +155,10 @@ export default function AdminDashboard() {
   const [showCerrarSemanaModal, setShowCerrarSemanaModal] = useState(false);
   const [showHistorialSemanalModal, setShowHistorialSemanalModal] = useState(false);
 
+  // FILTROS DE FECHA PARA EL HISTORIAL DE SEMANAS
+  const [fechaDesde, setFechaDesde] = useState("");
+  const [fechaHasta, setFechaHasta] = useState("");
+
   const [confirmModalData, setConfirmModalData] = useState<{
     isOpen: boolean;
     title: string;
@@ -159,6 +170,14 @@ export default function AdminDashboard() {
     message: "",
     onConfirm: async () => {},
   });
+
+  const obtenerMontoFiado = (v: Venta) => {
+    if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
+      const pFiado = v.desglose_pagos.find((p) => p.metodo === "fiado");
+      return pFiado ? pFiado.monto : 0;
+    }
+    return v.metodo_pago?.toLowerCase().includes("fiado") ? v.total || 0 : 0;
+  };
 
   const loadData = async () => {
     setLoading(true);
@@ -222,42 +241,54 @@ export default function AdminDashboard() {
   }, [ventasDiaActual]);
 
   const totalFiadosHoy = useMemo(() => {
-    return ventasDiaActual.reduce((acc, v) => {
-      if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
-        const fiadoObj = v.desglose_pagos.find((p) => p.metodo === "fiado");
-        return acc + (fiadoObj ? fiadoObj.monto : 0);
-      }
-      return acc + (v.metodo_pago?.toLowerCase().includes("fiado") ? v.total || 0 : 0);
-    }, 0);
+    return ventasDiaActual.reduce((acc, v) => acc + obtenerMontoFiado(v), 0);
   }, [ventasDiaActual]);
 
   const totalGastosHoy = useMemo(() => {
+    if (!cierreAbiertoActual) return 0;
     return gastosDiaActual.reduce((acc, g) => acc + (g.monto || 0), 0);
-  }, [gastosDiaActual]);
+  }, [gastosDiaActual, cierreAbiertoActual]);
 
+  // MAPA PARA ASOCIAR EL CIERRE DIARIO A SU FECHA REAL DE APERTURA/REGISTRO
+  const cierreFechaMap = useMemo(() => {
+    const map: Record<number, string> = {};
+    cierresDiarios.forEach((c) => {
+      map[c.id] = c.fecha;
+    });
+    return map;
+  }, [cierresDiarios]);
+
+  // AGRUPACIÓN AJUSTADA SEGÚN LA FECHA DE APERTURA DEL CIERRE DIARIO
   const ventasPorDia = useMemo(() => {
     const grupos: Record<string, Venta[]> = {};
     ventas.forEach((v) => {
-      const fecha = new Date(v.created_at).toISOString().split("T")[0];
-      if (!grupos[fecha]) grupos[fecha] = [];
-      grupos[fecha].push(v);
+      const fechaCierre = v.cierre_diario_id ? cierreFechaMap[v.cierre_diario_id] : null;
+      const fechaFallback = new Date(v.created_at).toLocaleDateString("sv-SE");
+      const fechaKey = fechaCierre || fechaFallback;
+
+      if (!grupos[fechaKey]) grupos[fechaKey] = [];
+      grupos[fechaKey].push(v);
     });
     return grupos;
-  }, [ventas]);
+  }, [ventas, cierreFechaMap]);
 
+  // AGRUPACIÓN DE GASTOS ASOCIADA AL CIERRE DIARIO CORRESPONDIENTE
   const gastosPorDia = useMemo(() => {
     const grupos: Record<string, Gasto[]> = {};
     gastos.forEach((g) => {
-      if (!grupos[g.fecha]) grupos[g.fecha] = [];
-      grupos[g.fecha].push(g);
+      const fechaCierre = g.cierre_diario_id ? cierreFechaMap[g.cierre_diario_id] : null;
+      const fechaKey = fechaCierre || g.fecha;
+
+      if (!grupos[fechaKey]) grupos[fechaKey] = [];
+      grupos[fechaKey].push(g);
     });
     return grupos;
-  }, [gastos]);
+  }, [gastos, cierreFechaMap]);
 
   const listaFiadosActivos = useMemo(() => {
     return ventas.filter((v) => {
       if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
-        return v.desglose_pagos.some((p) => p.metodo === "fiado");
+        return v.desglose_pagos.some((p) => p.metodo === "fiado" && p.monto > 0);
       }
       return v.metodo_pago?.toLowerCase().includes("fiado");
     });
@@ -265,6 +296,8 @@ export default function AdminDashboard() {
 
   const toggleFolder = (fecha: string) => setOpenFolders((prev) => ({ ...prev, [fecha]: !prev[fecha] }));
   const toggleItems = (ventaId: number) => setOpenItems((prev) => ({ ...prev, [ventaId]: !prev[ventaId] }));
+  const toggleCierre = (cierreId: number) => setOpenCierres((prev) => ({ ...prev, [cierreId]: !prev[cierreId] }));
+  const toggleSemanaFolder = (semanaId: number) => setOpenSemanasFolders((prev) => ({ ...prev, [semanaId]: !prev[semanaId] }));
 
   const requestConfirmation = (title: string, message: string, onConfirmAction: () => Promise<void>) => {
     setConfirmModalData({
@@ -367,39 +400,55 @@ export default function AdminDashboard() {
   };
 
   const handleConfirmCerrarSemana = async () => {
-    if (ventas.length === 0 && gastos.length === 0) {
+    if (ventas.length === 0 && gastos.length === 0 && cierresDiarios.length === 0) {
       alert("No hay registros activos para archivar.");
       setShowCerrarSemanaModal(false);
       return;
     }
 
-    const fechasVentas = ventas.map((v) => new Date(v.created_at).toISOString().split("T")[0]);
-    const fechasGastos = gastos.map((g) => g.fecha);
-    const todasFechas = [...fechasVentas, ...fechasGastos].sort();
+    try {
+      const fechasVentas = ventas.map((v) => new Date(v.created_at).toISOString().split("T")[0]);
+      const fechasGastos = gastos.map((g) => g.fecha);
+      const fechasCierres = cierresDiarios.map((c) => c.fecha);
+      const todasFechas = [...fechasVentas, ...fechasGastos, ...fechasCierres].sort();
 
-    const fechaInicio = todasFechas[0] || new Date().toISOString().split("T")[0];
-    const fechaFin = todasFechas[todasFechas.length - 1] || new Date().toISOString().split("T")[0];
+      const fechaInicio = todasFechas[0] || new Date().toISOString().split("T")[0];
+      const fechaFin = todasFechas[todasFechas.length - 1] || new Date().toISOString().split("T")[0];
 
-    const { error } = await supabase.from("cierres_semanales").insert({
-      fecha_inicio: fechaInicio,
-      fecha_fin: fechaFin,
-      total_ingresos: totalIngresos,
-      total_gastos: totalGastosCompras,
-      caja_neta: totalIngresos - totalGastosCompras,
-      total_fiados_pendientes: totalFiadosPendientes,
-      ventas_resumen: ventas,
-      gastos_resumen: gastos,
-    });
+      // Sanitización para asegurar compatibilidad estricta con Supabase JSON/JSONB
+      const payload = {
+        fecha_inicio: fechaInicio,
+        fecha_fin: fechaFin,
+        total_ingresos: Number(totalIngresos) || 0,
+        total_gastos: Number(totalGastosCompras) || 0,
+        caja_neta: Number(totalIngresos - totalGastosCompras) || 0,
+        total_fiados_pendientes: Number(totalFiadosPendientes) || 0,
+        ventas_resumen: JSON.parse(JSON.stringify(ventas)),
+        gastos_resumen: JSON.parse(JSON.stringify(gastos)),
+        cierres_diarios_resumen: JSON.parse(JSON.stringify(cierresDiarios)),
+      };
 
-    if (!error) {
+      const { error } = await supabase.from("cierres_semanales").insert([payload]);
+
+      if (error) {
+        console.error("Error al insertar en cierres_semanales:", error);
+        alert(`Error de Supabase (400): ${error.message || "Revisa las columnas de la tabla en Supabase"}`);
+        return;
+      }
+
+      // Si la inserción fue exitosa, limpiamos las tablas dependientes
       const vIds = ventas.map((v) => v.id);
       const gIds = gastos.map((g) => g.id).filter(Boolean);
+      const cdIds = cierresDiarios.map((c) => c.id);
 
       if (vIds.length > 0) await supabase.from("ventas").delete().in("id", vIds);
       if (gIds.length > 0) await supabase.from("gastos").delete().in("id", gIds);
+      if (cdIds.length > 0) await supabase.from("cierres_diarios").delete().in("id", cdIds);
 
       setShowCerrarSemanaModal(false);
       loadData();
+    } catch (err) {
+      console.error("Excepción detectada al cerrar semana:", err);
     }
   };
 
@@ -442,6 +491,7 @@ export default function AdminDashboard() {
       descripcion: gastoText.trim(),
       monto: montoVal,
       created_at: nowIso,
+      cierre_diario_id: cierreAbiertoActual?.id || null
     });
 
     if (!error) loadData();
@@ -461,16 +511,28 @@ export default function AdminDashboard() {
   }, [ventas]);
 
   const totalFiadosPendientes = useMemo(() => {
-    return ventas.reduce((acc, v) => {
-      if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
-        const fiadoObj = v.desglose_pagos.find((p) => p.metodo === "fiado");
-        return acc + (fiadoObj ? fiadoObj.monto : 0);
-      }
-      return acc + (v.metodo_pago?.toLowerCase().includes("fiado") ? v.total || 0 : 0);
-    }, 0);
+    return ventas.reduce((acc, v) => acc + obtenerMontoFiado(v), 0);
   }, [ventas]);
 
   const totalGastosCompras = useMemo(() => gastos.reduce((acc, g) => acc + (g.monto || 0), 0), [gastos]);
+
+  // SEMANAS FILTRADAS
+  const semanasFiltradas = useMemo(() => {
+    return cierresSemanales.filter((s) => {
+      if (!fechaDesde && !fechaHasta) return true;
+      if (fechaDesde && s.fecha_fin < fechaDesde) return false;
+      if (fechaHasta && s.fecha_inicio > fechaHasta) return false;
+      return true;
+    });
+  }, [cierresSemanales, fechaDesde, fechaHasta]);
+
+  // ACUMULADOS DE SEMANAS FILTRADAS
+  const acumuladoSemanasConsultadas = useMemo(() => {
+    const totalRecaudado = semanasFiltradas.reduce((acc, s) => acc + (s.total_ingresos || 0), 0);
+    const totalGastos = semanasFiltradas.reduce((acc, s) => acc + (s.total_gastos || 0), 0);
+    const cajaNeta = semanasFiltradas.reduce((acc, s) => acc + (s.caja_neta || 0), 0);
+    return { totalRecaudado, totalGastos, cajaNeta };
+  }, [semanasFiltradas]);
 
   const distribucionMetodos = useMemo(() => {
     const map: Record<string, number> = {};
@@ -679,7 +741,7 @@ export default function AdminDashboard() {
 
             <div className="space-y-2 pt-2 border-t border-slate-800">
               <h3 className="text-xs font-black uppercase text-slate-400 tracking-wider flex items-center gap-2">
-                <BarChart3 className="w-4 h-4 text-slate-400" /> Acumulado Histórico Global
+                <BarChart3 className="w-4 h-4 text-slate-400" /> Acumulado Histórico Global (Semana Actual en Curso)
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
                 <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
@@ -861,7 +923,7 @@ export default function AdminDashboard() {
                       <div className="p-3 space-y-3 bg-slate-950/50">
                         <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                           <h4 className="text-[9px] font-black uppercase text-pink-400 mb-1.5 flex items-center gap-1">
-                            <Wallet className="w-3 h-3" /> Desglose por Método:
+                            <Wallet className="w-3 h-3" /> Desglose por Método del Día:
                           </h4>
                           <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-[11px] font-bold">
                             <div className="p-1.5 bg-slate-900 rounded-lg border border-slate-800 text-slate-300">
@@ -886,13 +948,24 @@ export default function AdminDashboard() {
                           <h4 className="text-[9px] font-black uppercase text-slate-400">Comandas y Transacciones:</h4>
                           {ventasDia.map((v) => {
                             const tieneFiado = v.desglose_pagos
-                              ? v.desglose_pagos.some((p) => p.metodo === "fiado")
+                              ? v.desglose_pagos.some((p) => p.metodo === "fiado" && p.monto > 0)
                               : v.metodo_pago?.toLowerCase().includes("fiado");
 
                             const itemsVisibles = !!openItems[v.id];
 
+                            const desgloseMesa: Record<string, number> = {};
+                            if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
+                              v.desglose_pagos.forEach((p) => {
+                                const m = p.metodo.toLowerCase();
+                                desgloseMesa[m] = (desgloseMesa[m] || 0) + (p.monto || 0);
+                              });
+                            } else {
+                              const m = (v.metodo_pago || "efectivo").toLowerCase();
+                              desgloseMesa[m] = (desgloseMesa[m] || 0) + (v.total || 0);
+                            }
+
                             return (
-                              <div key={v.id} className={`p-3 rounded-xl border space-y-1.5 transition-all ${tieneFiado ? "bg-amber-950/20 border-amber-500/60" : "bg-slate-950 border-slate-800"}`}>
+                              <div key={v.id} className={`p-3 rounded-xl border space-y-2 transition-all ${tieneFiado ? "bg-amber-950/20 border-amber-500/60" : "bg-slate-950 border-slate-800"}`}>
                                 <div className="flex justify-between items-center pb-1 border-b border-slate-900">
                                   <div>
                                     <span className="font-black text-xs text-white block">Espacio #{v.numero_mesa || v.mesa_id}</span>
@@ -933,6 +1006,37 @@ export default function AdminDashboard() {
                                   </div>
                                 )}
 
+                                <div className="p-2 bg-slate-900/80 rounded-xl border border-slate-800/80 space-y-1">
+                                  <span className="text-[9px] font-black uppercase text-pink-400 block">Detalle de pago de esta mesa:</span>
+                                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-1 text-[10px] font-bold">
+                                    {desgloseMesa["efectivo"] !== undefined && desgloseMesa["efectivo"] > 0 && (
+                                      <div className="p-1 bg-slate-950 rounded border border-slate-800 text-slate-300">
+                                        💵 Efectivo: <span className="font-mono text-emerald-400 block text-[10px]">${desgloseMesa["efectivo"].toLocaleString()}</span>
+                                      </div>
+                                    )}
+                                    {desgloseMesa["nequi"] !== undefined && desgloseMesa["nequi"] > 0 && (
+                                      <div className="p-1 bg-slate-950 rounded border border-slate-800 text-slate-300">
+                                        📱 Nequi: <span className="font-mono text-purple-400 block text-[10px]">${desgloseMesa["nequi"].toLocaleString()}</span>
+                                      </div>
+                                    )}
+                                    {desgloseMesa["daviplata"] !== undefined && desgloseMesa["daviplata"] > 0 && (
+                                      <div className="p-1 bg-slate-950 rounded border border-slate-800 text-slate-300">
+                                        🔴 Daviplata: <span className="font-mono text-rose-400 block text-[10px]">${desgloseMesa["daviplata"].toLocaleString()}</span>
+                                      </div>
+                                    )}
+                                    {desgloseMesa["tarjeta"] !== undefined && desgloseMesa["tarjeta"] > 0 && (
+                                      <div className="p-1 bg-slate-950 rounded border border-slate-800 text-slate-300">
+                                        💳 Tarjeta: <span className="font-mono text-cyan-400 block text-[10px]">${desgloseMesa["tarjeta"].toLocaleString()}</span>
+                                      </div>
+                                    )}
+                                    {desgloseMesa["fiado"] !== undefined && desgloseMesa["fiado"] > 0 && (
+                                      <div className="p-1 bg-amber-950/40 rounded border border-amber-500/40 text-amber-300">
+                                        📌 Fiado: <span className="font-mono text-amber-400 block text-[10px]">${desgloseMesa["fiado"].toLocaleString()}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
                                 <div className="pt-1 border-t border-slate-900 flex justify-between items-center text-xs font-black">
                                   <span className={`uppercase text-[8px] px-2 py-0.5 rounded-full border ${tieneFiado ? "bg-amber-500/20 text-amber-300 border-amber-500/50" : "bg-slate-900 text-pink-400 border-slate-800"}`}>
                                     Pago: {v.metodo_pago}
@@ -962,7 +1066,7 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* PESTAÑA 3: AUDITORÍA DE CIERRES DIARIOS (DETALLADA) */}
+        {/* PESTAÑA 3: AUDITORÍA DE CIERRES DIARIOS (COMPACTADA CON OJITO) */}
         {activeTab === "cierres" && (
           <div className="space-y-4 animate-fadeIn">
             <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5">
@@ -973,75 +1077,113 @@ export default function AdminDashboard() {
               {cierresDiarios.length === 0 ? (
                 <p className="text-xs text-slate-500 font-bold text-center py-6">No hay cierres diarios guardados todavía.</p>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {cierresDiarios.map((cd) => {
                     const declarado = cd.monto_cierre_declarado ?? cd.monto_declarado ?? 0;
                     const esperado = cd.monto_cierre_esperado ?? cd.monto_esperado ?? 0;
+                    const totalVentasSinDescuento = (cd.total_efectivo || 0) + (cd.total_nequi || 0) + (cd.total_daviplata || 0) + (cd.total_tarjeta || 0) + (cd.total_fiado || 0);
+
+                    const isCierreOpen = !!openCierres[cd.id];
 
                     return (
-                      <div key={cd.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2.5 relative shadow-lg">
-                        <div className="flex justify-between items-center pb-2 border-b border-slate-800 pr-7">
+                      <div key={cd.id} className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-2 relative shadow-lg">
+                        {/* CABECERA COMPACTA CON FECHA Y TOTAL VENTAS */}
+                        <div className="flex justify-between items-center pr-6">
                           <div>
                             <span className="font-black text-xs text-amber-300 block">{cd.fecha}</span>
                             <span className="text-[9px] text-slate-500 font-mono">
                               {new Date(cd.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                             </span>
                           </div>
-                          <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${cd.es_cuadrado ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
-                            {cd.es_cuadrado ? "Cuadrado" : "Con Diferencia"}
-                          </span>
+
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${cd.es_cuadrado ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
+                              {cd.es_cuadrado ? "Cuadrado" : "Diferencia"}
+                            </span>
+
+                            <button
+                              onClick={() => toggleCierre(cd.id)}
+                              className="p-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-pink-400 transition-all cursor-pointer flex items-center gap-1"
+                              title={isCierreOpen ? "Ocultar desglose" : "Ver desglose completo"}
+                            >
+                              {isCierreOpen ? <EyeOff className="w-3.5 h-3.5 text-pink-400" /> : <Eye className="w-3.5 h-3.5 text-cyan-400" />}
+                            </button>
+                          </div>
                         </div>
 
                         <button
                           onClick={() => handleDeleteCierreDiario(cd.id, cd.fecha)}
-                          className="absolute top-3.5 right-3 p-1 rounded-lg bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white transition-all cursor-pointer"
+                          className="absolute top-3.5 right-2 text-slate-600 hover:text-rose-400 transition-all cursor-pointer"
                           title="Eliminar este cierre"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
 
-                        <div className="space-y-1.5 text-xs">
-                          {cd.empleado_turno && (
-                            <div className="flex justify-between items-center p-1.5 bg-slate-900/80 rounded-lg text-slate-300 font-bold">
-                              <span className="flex items-center gap-1 text-[11px] text-cyan-400"><UserCheck className="w-3.5 h-3.5" /> Cobró Turno:</span>
-                              <span className="text-white">{cd.empleado_turno}</span>
-                            </div>
-                          )}
-
-                          {cd.cobro_turno !== undefined && cd.cobro_turno > 0 && (
-                            <div className="flex justify-between text-cyan-300 font-mono font-bold">
-                              <span>Cobro de Turno:</span>
-                              <span>-${(cd.cobro_turno || 0).toLocaleString()}</span>
-                            </div>
-                          )}
-
-                          <div className="pt-1 border-t border-slate-900 space-y-1 font-mono">
-                            <div className="flex justify-between text-slate-400"><span>Monto Inicial (Base):</span><span>${(cd.monto_inicial ?? 0).toLocaleString()}</span></div>
-                            <div className="flex justify-between text-emerald-400"><span>Ventas Efectivo:</span><span>${(cd.total_efectivo ?? 0).toLocaleString()}</span></div>
-                            <div className="flex justify-between text-purple-400"><span>Ventas Nequi:</span><span>${(cd.total_nequi ?? 0).toLocaleString()}</span></div>
-                            <div className="flex justify-between text-rose-400"><span>Ventas Daviplata:</span><span>${(cd.total_daviplata ?? 0).toLocaleString()}</span></div>
-                            <div className="flex justify-between text-cyan-400"><span>Ventas Tarjeta:</span><span>${(cd.total_tarjeta ?? 0).toLocaleString()}</span></div>
-                            <div className="flex justify-between text-amber-400"><span>Ventas Fiado:</span><span>${(cd.total_fiado ?? 0).toLocaleString()}</span></div>
-                            <div className="flex justify-between text-rose-400 font-bold"><span>Compra Insumos/Gastos:</span><span>-${(cd.total_gastos ?? 0).toLocaleString()}</span></div>
-                          </div>
-
-                          <div className="pt-2 border-t border-slate-800 font-mono space-y-1 font-black">
-                            <div className="flex justify-between text-cyan-300"><span>Caja Esperada:</span><span>${esperado.toLocaleString()}</span></div>
-                            <div className="flex justify-between text-emerald-300"><span>Caja Declarada:</span><span>${declarado.toLocaleString()}</span></div>
-                            {(cd.diferencia ?? 0) !== 0 && (
-                              <div className="flex justify-between text-rose-400"><span>Diferencia Descuadre:</span><span>${cd.diferencia.toLocaleString()}</span></div>
-                            )}
-                          </div>
+                        {/* RESUMEN VISIBLE DE VENTAS SIN DESCUENTO */}
+                        <div className="p-2 bg-purple-950/30 border border-purple-500/30 rounded-xl flex justify-between items-center">
+                          <span className="text-[10px] font-black uppercase text-purple-300">TOTAL VENTAS DEL DÍA (SIN DESCUENTO):</span>
+                          <span className="font-mono text-xs font-black text-purple-300">${totalVentasSinDescuento.toLocaleString()}</span>
                         </div>
 
-                        {cd.razon_diferencia && (
-                          <div className="p-2 bg-rose-950/20 border border-rose-500/30 rounded-xl space-y-0.5 mt-2">
-                            <span className="text-[9px] font-black text-rose-400 uppercase block flex items-center gap-1">
-                              <AlertTriangle className="w-3 h-3" /> Razón del descuadre:
-                            </span>
-                            <p className="text-[10px] text-slate-300 italic">
-                              "{cd.razon_diferencia}"
-                            </p>
+                        {/* DESGLOSE COMPLETO DESPLEGABLE CON EL OJITO */}
+                        {isCierreOpen && (
+                          <div className="space-y-1.5 text-xs pt-2 border-t border-slate-900 animate-fadeIn">
+                            {cd.quien_abre && (
+                              <div className="flex justify-between items-center p-1.5 bg-slate-900/80 rounded-lg text-slate-300 font-bold">
+                                <span className="flex items-center gap-1 text-[11px] text-pink-400"><User className="w-3.5 h-3.5" /> Abrió el Día:</span>
+                                <span className="text-white uppercase">{cd.quien_abre}</span>
+                              </div>
+                            )}
+
+                            {cd.empleado_turno && (
+                              <div className="flex justify-between items-center p-1.5 bg-slate-900/80 rounded-lg text-slate-300 font-bold">
+                                <span className="flex items-center gap-1 text-[11px] text-cyan-400"><UserCheck className="w-3.5 h-3.5" /> Cobró Turno:</span>
+                                <span className="text-white uppercase">{cd.empleado_turno}</span>
+                              </div>
+                            )}
+
+                            {cd.cobro_turno !== undefined && cd.cobro_turno > 0 && (
+                              <div className="flex justify-between text-cyan-300 font-mono font-bold">
+                                <span>Cobro de Turno:</span>
+                                <span>-${(cd.cobro_turno || 0).toLocaleString()}</span>
+                              </div>
+                            )}
+
+                            {cd.recargo_tarjeta !== undefined && cd.recargo_tarjeta > 0 && (
+                              <div className="flex justify-between text-cyan-400 font-mono font-bold">
+                                <span className="flex items-center gap-1"><CreditCard className="w-3 h-3" /> Recargo Tarjeta (+5%):</span>
+                                <span>+${(cd.recargo_tarjeta || 0).toLocaleString()}</span>
+                              </div>
+                            )}
+
+                            <div className="pt-1 border-t border-slate-900 space-y-1 font-mono">
+                              <div className="flex justify-between text-slate-400"><span>Monto Inicial (Base):</span><span>${(cd.monto_inicial ?? 0).toLocaleString()}</span></div>
+                              <div className="flex justify-between text-emerald-400"><span>Ventas Efectivo:</span><span>${(cd.total_efectivo ?? 0).toLocaleString()}</span></div>
+                              <div className="flex justify-between text-purple-400"><span>Ventas Nequi:</span><span>${(cd.total_nequi ?? 0).toLocaleString()}</span></div>
+                              <div className="flex justify-between text-rose-400"><span>Ventas Daviplata:</span><span>${(cd.total_daviplata ?? 0).toLocaleString()}</span></div>
+                              <div className="flex justify-between text-cyan-400"><span>Ventas Tarjeta:</span><span>${(cd.total_tarjeta ?? 0).toLocaleString()}</span></div>
+                              <div className="flex justify-between text-amber-400"><span>Ventas Fiado:</span><span>${(cd.total_fiado ?? 0).toLocaleString()}</span></div>
+                              <div className="flex justify-between text-rose-400 font-bold"><span>Compra Insumos/Gastos:</span><span>-${(cd.total_gastos ?? 0).toLocaleString()}</span></div>
+                            </div>
+
+                            <div className="pt-2 border-t border-slate-800 font-mono space-y-1 font-black">
+                              <div className="flex justify-between text-cyan-300"><span>Caja Esperada:</span><span>${esperado.toLocaleString()}</span></div>
+                              <div className="flex justify-between text-emerald-300"><span>Caja Declarada:</span><span>${declarado.toLocaleString()}</span></div>
+                              {(cd.diferencia ?? 0) !== 0 && (
+                                <div className="flex justify-between text-rose-400"><span>Diferencia Descuadre:</span><span>${cd.diferencia.toLocaleString()}</span></div>
+                              )}
+                            </div>
+
+                            {cd.razon_diferencia && (
+                              <div className="p-2 bg-rose-950/20 border border-rose-500/30 rounded-xl space-y-0.5 mt-2">
+                                <span className="text-[9px] font-black text-rose-400 uppercase block flex items-center gap-1">
+                                  <AlertTriangle className="w-3 h-3" /> Razón del descuadre:
+                                </span>
+                                <p className="text-[10px] text-slate-300 italic">
+                                  "{cd.razon_diferencia}"
+                                </p>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1162,28 +1304,31 @@ export default function AdminDashboard() {
               {listaFiadosActivos.length === 0 ? (
                 <p className="text-xs text-slate-500 font-bold text-center py-6">No hay cuentas pendientes por cobrar.</p>
               ) : (
-                listaFiadosActivos.map((v) => (
-                  <div key={v.id} className="bg-slate-950 p-3 rounded-2xl border border-amber-500/40 flex items-center justify-between">
-                    <div>
-                      <span className="font-black text-xs text-amber-300 block uppercase">
-                        {v.cliente_nombre ? `Cliente: ${v.cliente_nombre}` : `Mesa #${v.numero_mesa || v.mesa_id}`}
-                      </span>
-                      <span className="text-[10px] font-bold text-slate-500">{new Date(v.created_at).toLocaleDateString()}</span>
+                listaFiadosActivos.map((v) => {
+                  const montoFiado = obtenerMontoFiado(v);
+                  return (
+                    <div key={v.id} className="bg-slate-950 p-3 rounded-2xl border border-amber-500/40 flex items-center justify-between">
+                      <div>
+                        <span className="font-black text-xs text-amber-300 block uppercase">
+                          {v.cliente_nombre ? `Cliente: ${v.cliente_nombre}` : `Mesa #${v.numero_mesa || v.mesa_id}`}
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-500">{new Date(v.created_at).toLocaleDateString()}</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-xs font-black text-amber-400">${montoFiado.toLocaleString()}</span>
+                        <button
+                          onClick={() => {
+                            setSelectedFiado(v);
+                            setShowAllFiadosModal(false);
+                          }}
+                          className="px-2.5 py-1 bg-emerald-500 text-slate-950 font-black text-[10px] uppercase rounded-lg cursor-pointer"
+                        >
+                          Saldar
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono text-xs font-black text-emerald-400">${v.total?.toLocaleString()}</span>
-                      <button
-                        onClick={() => {
-                          setSelectedFiado(v);
-                          setShowAllFiadosModal(false);
-                        }}
-                        className="px-2.5 py-1 bg-emerald-500 text-slate-950 font-black text-[10px] uppercase rounded-lg cursor-pointer"
-                      >
-                        Saldar
-                      </button>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
@@ -1242,7 +1387,7 @@ export default function AdminDashboard() {
             </div>
 
             <p className="text-xs font-bold text-amber-300 leading-relaxed bg-amber-500/10 p-3 rounded-2xl border border-amber-500/30">
-              ¿Estás seguro de que quieres archivar la semana? Los datos actuales de ventas y gastos pasarán al historial semanal y la pantalla inicial se limpiará.
+              ¿Estás seguro de que quieres archivar la semana? Todos los datos de ventas, gastos y auditorías de cierre pasarán al historial semanal y la pantalla de control activa se limpiará.
             </p>
 
             <button
@@ -1255,40 +1400,175 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* MODAL HISTORIAL SEMANAL */}
+      {/* MODAL HISTORIAL SEMANAL (CON FILTRO DE FECHAS Y ACUMULADOS GLOBALES DE SEMANAS) */}
       {showHistorialSemanalModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-2xl w-full shadow-2xl relative space-y-4 max-h-[85vh] flex flex-col">
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 max-w-4xl w-full shadow-2xl relative space-y-4 max-h-[90vh] flex flex-col">
+            
+            {/* CABECERA MODAL */}
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-              <h3 className="font-black text-base text-white flex items-center gap-2">
-                <History className="w-5 h-5 text-purple-400" /> Historial Semanal
+              <h3 className="font-black text-base sm:text-lg text-white flex items-center gap-2">
+                <History className="w-5 h-5 text-purple-400" /> Historial y Archivo Semanal
               </h3>
               <button onClick={() => setShowHistorialSemanalModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-3">
-              {cierresSemanales.map((semana) => (
-                <div key={semana.id} className="bg-slate-950 p-4 rounded-2xl border border-purple-500/30 space-y-2 relative">
-                  <div className="flex justify-between items-center pb-2 border-b border-slate-900 pr-8">
-                    <span className="font-black text-xs text-purple-300 uppercase">
-                      Semana: {semana.fecha_inicio} al {semana.fecha_fin}
-                    </span>
-                    <span className="font-mono text-cyan-400 font-black text-sm">
-                      Caja Neta: ${semana.caja_neta.toLocaleString()}
-                    </span>
-                  </div>
-
-                  <button
-                    onClick={() => handleDeleteSemanaArchivada(semana.id, semana.fecha_inicio, semana.fecha_fin)}
-                    className="absolute top-3.5 right-3 p-1 rounded-lg bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white transition-all cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+            {/* FILTRO DE FECHAS */}
+            <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs font-black text-purple-400 uppercase">
+                <Filter className="w-4 h-4" /> Consultar por Rango de Fechas:
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] font-bold text-slate-400">Desde:</span>
+                  <input
+                    type="date"
+                    value={fechaDesde}
+                    onChange={(e) => setFechaDesde(e.target.value)}
+                    className="bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-xs text-white font-mono focus:outline-none focus:border-purple-500"
+                  />
                 </div>
-              ))}
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] font-bold text-slate-400">Hasta:</span>
+                  <input
+                    type="date"
+                    value={fechaHasta}
+                    onChange={(e) => setFechaHasta(e.target.value)}
+                    className="bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-xs text-white font-mono focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+                {(fechaDesde || fechaHasta) && (
+                  <button
+                    onClick={() => {
+                      setFechaDesde("");
+                      setFechaHasta("");
+                    }}
+                    className="px-2 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded-lg text-[10px] font-black cursor-pointer"
+                  >
+                    Limpiar
+                  </button>
+                )}
+              </div>
             </div>
+
+            {/* TARJETAS ACUMULADAS DE LAS SEMANAS CONSULTADAS */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="bg-slate-950 border border-emerald-500/30 p-3 rounded-2xl">
+                <span className="text-[9px] font-black uppercase text-slate-400 block">Total Recaudado Global (Semanas)</span>
+                <span className="text-base sm:text-lg font-black text-emerald-400 font-mono">
+                  ${acumuladoSemanasConsultadas.totalRecaudado.toLocaleString()}
+                </span>
+              </div>
+
+              <div className="bg-slate-950 border border-rose-500/30 p-3 rounded-2xl">
+                <span className="text-[9px] font-black uppercase text-slate-400 block">Total Gastos Global (Semanas)</span>
+                <span className="text-base sm:text-lg font-black text-rose-400 font-mono">
+                  ${acumuladoSemanasConsultadas.totalGastos.toLocaleString()}
+                </span>
+              </div>
+
+              <div className="bg-slate-950 border border-cyan-500/30 p-3 rounded-2xl">
+                <span className="text-[9px] font-black uppercase text-slate-400 block">Caja Neta Global (Semanas)</span>
+                <span className="text-base sm:text-lg font-black text-cyan-400 font-mono">
+                  ${acumuladoSemanasConsultadas.cajaNeta.toLocaleString()}
+                </span>
+              </div>
+            </div>
+
+            {/* LISTA DE CARPETAS DE SEMANAS */}
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+              {semanasFiltradas.length === 0 ? (
+                <p className="text-xs text-slate-500 font-bold text-center py-8">No se encontraron semanas guardadas en el rango seleccionado.</p>
+              ) : (
+                semanasFiltradas.map((semana) => {
+                  const isOpen = !!openSemanasFolders[semana.id];
+
+                  return (
+                    <div key={semana.id} className="bg-slate-950 rounded-2xl border border-purple-500/30 overflow-hidden shadow-lg">
+                      <div className="p-3 bg-slate-900/90 flex items-center justify-between gap-3 border-b border-slate-800">
+                        <button onClick={() => toggleSemanaFolder(semana.id)} className="flex items-center gap-2 cursor-pointer text-left">
+                          {isOpen ? <FolderOpen className="w-5 h-5 text-purple-400" /> : <Folder className="w-5 h-5 text-purple-500" />}
+                          <div>
+                            <span className="font-black text-xs sm:text-sm text-purple-300 uppercase block">
+                              Semana: {semana.fecha_inicio} al {semana.fecha_fin}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-bold">
+                              Ingresos: ${semana.total_ingresos?.toLocaleString()} | Gastos: ${semana.total_gastos?.toLocaleString()}
+                            </span>
+                          </div>
+                        </button>
+
+                        <div className="flex items-center gap-3">
+                          <span className="font-mono text-cyan-400 font-black text-xs sm:text-sm">
+                            Neta: ${semana.caja_neta?.toLocaleString()}
+                          </span>
+
+                          <button
+                            onClick={() => handleDeleteSemanaArchivada(semana.id, semana.fecha_inicio, semana.fecha_fin)}
+                            className="p-1 rounded-lg bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white transition-all cursor-pointer"
+                            title="Eliminar semana"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button onClick={() => toggleSemanaFolder(semana.id)} className="p-1 cursor-pointer">
+                            {isOpen ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* DESGLOSE INTERNO DE LA SEMANA */}
+                      {isOpen && (
+                        <div className="p-3 space-y-3 bg-slate-950/60">
+                          {/* REGISTROS DE AUDITORÍA DE CIERRE DE ESTA SEMANA */}
+                          {semana.cierres_diarios_resumen && semana.cierres_diarios_resumen.length > 0 && (
+                            <div className="space-y-2">
+                              <h5 className="text-[10px] font-black uppercase text-amber-400 flex items-center gap-1">
+                                <FileText className="w-3.5 h-3.5" /> Registros de Auditoría de Cierre Guardados:
+                              </h5>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                {semana.cierres_diarios_resumen.map((cd) => (
+                                  <div key={cd.id} className="p-2.5 bg-slate-900 rounded-xl border border-slate-800 text-xs space-y-1">
+                                    <div className="flex justify-between font-bold">
+                                      <span className="text-amber-300">{cd.fecha}</span>
+                                      <span className={`text-[8px] uppercase px-1.5 py-0.5 rounded ${cd.es_cuadrado ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
+                                        {cd.es_cuadrado ? "Cuadrado" : "Diferencia"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between font-mono text-[10px] text-slate-300">
+                                      <span>Ventas: ${((cd.total_efectivo||0)+(cd.total_nequi||0)+(cd.total_daviplata||0)+(cd.total_tarjeta||0)+(cd.total_fiado||0)).toLocaleString()}</span>
+                                      <span>Gastos: -${(cd.total_gastos||0).toLocaleString()}</span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* RESUMEN DE VENTAS DE ESA SEMANA */}
+                          {semana.ventas_resumen && semana.ventas_resumen.length > 0 && (
+                            <div className="space-y-1">
+                              <h5 className="text-[10px] font-black uppercase text-slate-400">Ventas de esta Semana ({semana.ventas_resumen.length}):</h5>
+                              <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+                                {semana.ventas_resumen.map((v) => (
+                                  <div key={v.id} className="p-1.5 bg-slate-900 rounded-lg text-[10px] flex justify-between font-bold text-slate-300 border border-slate-800">
+                                    <span>Mesa #{v.numero_mesa || v.mesa_id} ({v.metodo_pago})</span>
+                                    <span className="font-mono text-emerald-400">${v.total?.toLocaleString()}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
           </div>
         </div>
       )}
@@ -1312,9 +1592,9 @@ export default function AdminDashboard() {
                   <User className="w-4 h-4" /> Cliente: {selectedFiado.cliente_nombre}
                 </p>
               )}
-              <p className="text-slate-400 font-bold">Monto a cancelar:</p>
-              <p className="text-xl font-black font-mono text-emerald-400">
-                ${selectedFiado.total?.toLocaleString()}
+              <p className="text-slate-400 font-bold">Monto exacto fiado a cancelar:</p>
+              <p className="text-xl font-black font-mono text-amber-400">
+                ${obtenerMontoFiado(selectedFiado).toLocaleString()}
               </p>
             </div>
 
