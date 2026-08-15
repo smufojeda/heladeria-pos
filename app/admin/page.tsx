@@ -34,6 +34,7 @@ import {
   Archive,
   History,
   CheckCircle2,
+  FileText
 } from "lucide-react";
 
 interface PagoParcial {
@@ -75,6 +76,25 @@ interface Producto {
   disponible: boolean;
 }
 
+interface CierreDiarioRecord {
+  id: number;
+  created_at: string;
+  fecha: string;
+  monto_inicial: number;
+  monto_cierre_declarado: number;
+  monto_cierre_esperado: number;
+  diferencia: number;
+  razon_diferencia: string;
+  es_cuadrado: boolean;
+  total_efectivo: number;
+  total_nequi: number;
+  total_daviplata: number;
+  total_tarjeta: number;
+  total_fiado: number;
+  total_gastos: number;
+  estado: string;
+}
+
 interface CierreSemanal {
   id: number;
   created_at: string;
@@ -92,6 +112,7 @@ export default function AdminDashboard() {
   const [ventas, setVentas] = useState<Venta[]>([]);
   const [gastos, setGastos] = useState<Gasto[]>([]);
   const [productos, setProductos] = useState<Producto[]>([]);
+  const [cierresDiarios, setCierresDiarios] = useState<CierreDiarioRecord[]>([]);
   const [cierresSemanales, setCierresSemanales] = useState<CierreSemanal[]>([]);
   const [loading, setLoading] = useState(true);
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
@@ -126,12 +147,14 @@ export default function AdminDashboard() {
       const { data: vData } = await supabase.from("ventas").select("*").order("created_at", { ascending: false });
       const { data: pData } = await supabase.from("productos").select("*").order("stock", { ascending: true });
       const { data: gData } = await supabase.from("gastos").select("*").order("created_at", { ascending: false });
-      const { data: cData } = await supabase.from("cierres_semanales").select("*").order("created_at", { ascending: false });
+      const { data: cdData } = await supabase.from("cierres_diarios").select("*").order("created_at", { ascending: false });
+      const { data: csData } = await supabase.from("cierres_semanales").select("*").order("created_at", { ascending: false });
 
       if (vData) setVentas(vData as Venta[]);
       if (pData) setProductos(pData as Producto[]);
       if (gData) setGastos(gData as Gasto[]);
-      if (cData) setCierresSemanales(cData as CierreSemanal[]);
+      if (cdData) setCierresDiarios(cdData as CierreDiarioRecord[]);
+      if (csData) setCierresSemanales(csData as CierreSemanal[]);
     } catch (_) {}
     setLoading(false);
   };
@@ -489,6 +512,44 @@ export default function AdminDashboard() {
               <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6" />
             </div>
           </div>
+        </div>
+
+        {/* REGISTRO DE CIERRES DIARIOS REALIZADOS */}
+        <div className="bg-slate-900 border border-amber-500/30 p-5 rounded-3xl space-y-4">
+          <h3 className="text-lg font-black text-white flex items-center gap-2">
+            <FileText className="w-5 h-5 text-amber-400" /> Registro de Cierres Diarios Realizados
+          </h3>
+
+          {cierresDiarios.length === 0 ? (
+            <p className="text-xs text-slate-500 font-bold text-center py-4">No hay cierres diarios guardados todavía.</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {cierresDiarios.map((cd) => (
+                <div key={cd.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
+                  <div className="flex justify-between items-center pb-2 border-b border-slate-900">
+                    <span className="font-black text-xs text-amber-300">{cd.fecha}</span>
+                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${cd.es_cuadrado ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
+                      {cd.es_cuadrado ? "Cuadrado" : "Con Diferencia"}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1 text-xs font-mono">
+                    <div className="flex justify-between text-slate-400"><span>Declarado:</span><span>${cd.monto_cierre_declarado?.toLocaleString()}</span></div>
+                    <div className="flex justify-between text-slate-400"><span>Esperado:</span><span>${cd.monto_cierre_esperado?.toLocaleString()}</span></div>
+                    {cd.diferencia !== 0 && (
+                      <div className="flex justify-between text-rose-400 font-bold"><span>Diferencia:</span><span>${cd.diferencia?.toLocaleString()}</span></div>
+                    )}
+                  </div>
+
+                  {cd.razon_diferencia && (
+                    <p className="text-[10px] text-slate-400 bg-slate-900 p-2 rounded-xl italic border border-slate-800">
+                      "{cd.razon_diferencia}"
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* SECCIÓN DE GRÁFICAS COMPACTAS CON BOTÓN DE OJITO */}

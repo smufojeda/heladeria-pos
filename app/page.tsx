@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ShoppingBag,
   CreditCard,
@@ -29,7 +30,13 @@ import {
   ChevronUp,
   ChevronDown,
   Sparkle,
-  Zap
+  Zap,
+  MoreVertical,
+  Calendar,
+  Edit2,
+  PlusCircle,
+  AlertTriangle,
+  FileText
 } from "lucide-react";
 
 type EstadoMesa = "libre" | "pendiente_servir" | "preparado" | "servido" | "pendiente_pago";
@@ -86,13 +93,30 @@ interface PedidoCocina {
   }[];
 }
 
-// Función auxiliar para formatear los números con puntos de miles (ej: 1.000 / 100.000 / 1.000.000)
-const formatCurrency = (amount: number | undefined | null) => {
-  if (amount === undefined || amount === null || isNaN(amount)) return "0";
-  return amount.toLocaleString("es-CO");
+interface CierreDiario {
+  id: number;
+  fecha: string;
+  monto_inicial: number;
+  estado: "abierto" | "cerrado";
+}
+
+// Formateador universal con separadores de miles es-CO (ej: 1.000, 100.000, 1.000.000)
+const formatCurrency = (amount: number | string | undefined | null) => {
+  if (amount === undefined || amount === null || amount === "") return "0";
+  const numericValue = typeof amount === "string" ? Number(amount.replace(/\D/g, "")) : amount;
+  if (isNaN(numericValue)) return "0";
+  return numericValue.toLocaleString("es-CO");
+};
+
+// Convierte string formateado con puntos a número limpio
+const parseCurrencyToNumber = (formattedStr: string): number => {
+  if (!formattedStr) return 0;
+  const cleanStr = formattedStr.replace(/\D/g, "");
+  return Number(cleanStr) || 0;
 };
 
 export default function HomePOS() {
+  const router = useRouter();
   const [vista, setVista] = useState<ModoVista>("mesero");
   const [mesas, setMesas] = useState<Mesa[]>([]);
   const [productos, setProductos] = useState<Producto[]>([]);
@@ -105,22 +129,42 @@ export default function HomePOS() {
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [initialItemsCount, setInitialItemsCount] = useState<number>(0);
-
-  // Estado para desplegar el carrito en móvil
   const [showMobileCart, setShowMobileCart] = useState(false);
 
-  // Modal Caja Inteligente
+  // Modal Caja
   const [showCheckout, setShowCheckout] = useState(false);
   const [discountInput, setDiscountInput] = useState<string>("0");
   const [discountType, setDiscountType] = useState<"monto" | "porcentaje">("monto");
   
-  // Estados para Pago Mixto y Caja
   const [pagos, setPagos] = useState<PagoParcial[]>([]);
   const [currentMetodo, setCurrentMetodo] = useState<MetodoPago>("efectivo");
   const [montoIngresado, setMontoIngresado] = useState<string>("");
   const [efectivoRecibido, setEfectivoRecibido] = useState<string>("");
   const [clienteFiado, setClienteFiado] = useState<string>("");
   const [saleCompleted, setSaleCompleted] = useState<boolean>(false);
+
+  // ESTADOS PIN ADMIN, MENÚ FLOTANTE Y APERTURA/CIERRE DE DÍA
+  const [showAdminPinModal, setShowAdminPinModal] = useState(false);
+  const [pinInput, setPinInput] = useState("");
+  const [showFloatingMenu, setShowFloatingMenu] = useState(false);
+
+  const [cierreActivo, setCierreActivo] = useState<CierreDiario | null>(null);
+  const [showAperturaModal, setShowAperturaModal] = useState(false);
+  const [fechaApertura, setFechaApertura] = useState(new Date().toISOString().split("T")[0]);
+  const [editFecha, setEditFecha] = useState(false);
+  const [montoInicialFormatted, setMontoInicialFormatted] = useState("");
+
+  const [showGastoModal, setShowGastoModal] = useState(false);
+  const [gastoDesc, setGastoDesc] = useState("");
+  const [gastoMonto, setGastoMonto] = useState("");
+
+  const [showCobroTurnoModal, setShowCobroTurnoModal] = useState(false);
+
+  const [showCierreModal, setShowCierreModal] = useState(false);
+  const [efectivoCierreInput, setEfectivoCierreInput] = useState("");
+  const [showRazonModal, setShowRazonModal] = useState(false);
+  const [razonDiferencia, setRazonDiferencia] = useState("");
+  const [resumenCierre, setResumenCierre] = useState<any>(null);
 
   const categories = useMemo(() => {
     const cats = new Set(productos.map((p) => p.categoria).filter(Boolean));
@@ -132,6 +176,14 @@ export default function HomePOS() {
     try {
       const { data: mesasData } = await supabase.from("mesas").select("*").order("numero", { ascending: true });
       const { data: prodData } = await supabase.from("productos").select("*").order("id", { ascending: true });
+      
+      // Obtener el estado del día abierto
+      const { data: diaData } = await supabase.from("cierres_diarios").select("*").eq("estado", "abierto").order("id", { ascending: false }).limit(1);
+      if (diaData && diaData.length > 0) {
+        setCierreActivo(diaData[0] as CierreDiario);
+      } else {
+        setCierreActivo(null);
+      }
 
       if (mesasData && mesasData.length > 0) {
         const formattedMesas = mesasData.map((m, idx) => {
@@ -139,13 +191,11 @@ export default function HomePOS() {
           if (idx < 5) customName = `Mesa ${idx + 1}`;
           else if (idx === 5) customName = "Barra 1";
           else if (idx === 6) customName = "Barra 2";
-
           return { ...m, nombre: customName };
         });
         setMesas(formattedMesas as Mesa[]);
       }
       if (prodData && prodData.length > 0) setProductos(prodData);
-
       fetchPedidosCocina();
     } catch (_) {}
     setLoading(false);
@@ -162,39 +212,185 @@ export default function HomePOS() {
     if (data) setPedidosCocina(data as any);
   };
 
-  // SUSCRIPCIÓN EN TIEMPO REAL CON SUPABASE REALTIME
   useEffect(() => {
     fetchData();
-
     const channel = supabase
       .channel("pos-realtime-changes")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "mesas" },
-        () => {
-          fetchData();
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "pedidos" },
-        () => {
-          fetchData();
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "pedido_items" },
-        () => {
-          fetchData();
-        }
-      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "mesas" }, () => fetchData())
+      .on("postgres_changes", { event: "*", schema: "public", table: "pedidos" }, () => fetchData())
+      .on("postgres_changes", { event: "*", schema: "public", table: "pedido_items" }, () => fetchData())
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
   }, []);
+
+  const handleAdminAccess = () => {
+    setShowAdminPinModal(true);
+  };
+
+  const handleVerifyPin = () => {
+    if (pinInput === "1624") {
+      setShowAdminPinModal(false);
+      setPinInput("");
+      router.push("/admin");
+    } else {
+      alert("⚠️ Clave de administrador incorrecta.");
+      setPinInput("");
+    }
+  };
+
+  // APERTURA DE DÍA CORREGIDA (Evita errores de restricción NOT NULL en Supabase)
+  const handleAbrirDia = async () => {
+    const monto = parseCurrencyToNumber(montoInicialFormatted);
+
+    const { data, error } = await supabase
+      .from("cierres_diarios")
+      .insert({
+        fecha: fechaApertura,
+        monto_inicial: monto,
+        monto_cierre_declarado: 0,
+        monto_cierre_esperado: 0,
+        diferencia: 0,
+        razon_diferencia: "",
+        es_cuadrado: true,
+        total_efectivo: 0,
+        total_nequi: 0,
+        total_daviplata: 0,
+        total_tarjeta: 0,
+        total_fiado: 0,
+        total_gastos: 0,
+        estado: "abierto"
+      })
+      .select()
+      .single();
+
+    if (!error && data) {
+      setCierreActivo(data as CierreDiario);
+      setShowAperturaModal(false);
+      setShowFloatingMenu(false);
+      setMontoInicialFormatted("");
+      alert("✅ ¡Día abierto exitosamente!");
+    } else {
+      console.error("Error al abrir día:", error);
+      alert("Error al abrir el día: " + (error?.message || "Verifica los permisos o la estructura de la base de datos."));
+    }
+  };
+
+  const handleAddGastoInsumos = async () => {
+    if (!gastoDesc.trim() || !gastoMonto) return alert("Completa los campos del gasto.");
+    const montoVal = parseCurrencyToNumber(gastoMonto);
+    const hoy = new Date().toISOString().split("T")[0];
+
+    await supabase.from("gastos").insert({
+      fecha: hoy,
+      descripcion: `[INSUMOS] ${gastoDesc.trim()}`,
+      monto: montoVal,
+      created_at: new Date().toISOString()
+    });
+
+    setGastoDesc("");
+    setGastoMonto("");
+    setShowGastoModal(false);
+    setShowFloatingMenu(false);
+    alert("✅ Gasto de insumos guardado correctamente.");
+  };
+
+  const calcularTotalesTurno = async () => {
+    const fechaHoy = cierreActivo?.fecha || new Date().toISOString().split("T")[0];
+    
+    const { data: ventasDia } = await supabase.from("ventas").select("*").gte("created_at", `${fechaHoy}T00:00:00`);
+    const { data: gastosDia } = await supabase.from("gastos").select("*").gte("created_at", `${fechaHoy}T00:00:00`);
+
+    let tEfectivo = 0, tNequi = 0, tDaviplata = 0, tTarjeta = 0, tFiado = 0;
+
+    (ventasDia || []).forEach((v: any) => {
+      if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
+        v.desglose_pagos.forEach((p: any) => {
+          if (p.metodo === "efectivo") tEfectivo += p.monto;
+          if (p.metodo === "nequi") tNequi += p.monto;
+          if (p.metodo === "daviplata") tDaviplata += p.monto;
+          if (p.metodo === "tarjeta") tTarjeta += p.monto;
+          if (p.metodo === "fiado") tFiado += p.monto;
+        });
+      } else {
+        const m = (v.metodo_pago || "efectivo").toLowerCase();
+        if (m.includes("efectivo")) tEfectivo += v.total || 0;
+        else if (m.includes("nequi")) tNequi += v.total || 0;
+        else if (m.includes("daviplata")) tDaviplata += v.total || 0;
+        else if (m.includes("tarjeta")) tTarjeta += v.total || 0;
+        else if (m.includes("fiado")) tFiado += v.total || 0;
+      }
+    });
+
+    const tGastos = (gastosDia || []).reduce((acc: number, g: any) => acc + (g.monto || 0), 0);
+    const baseInicial = cierreActivo?.monto_inicial || 0;
+    const totalCajaEsperado = tEfectivo + baseInicial - tGastos;
+
+    return {
+      tEfectivo,
+      tNequi,
+      tDaviplata,
+      tTarjeta,
+      tFiado,
+      tTransferencias: tNequi + tDaviplata,
+      tGastos,
+      baseInicial,
+      totalCajaEsperado
+    };
+  };
+
+  const handleOpenCierreModal = async () => {
+    if (!cierreActivo) {
+      alert("⚠️ No hay un día abierto actualmente. Abre el día primero.");
+      return;
+    }
+    const res = await calcularTotalesTurno();
+    setResumenCierre(res);
+    setShowCierreModal(true);
+    setShowFloatingMenu(false);
+  };
+
+  const handleValidarCierreEfectivo = () => {
+    const valorIngresado = parseCurrencyToNumber(efectivoCierreInput);
+
+    if (valorIngresado !== resumenCierre.totalCajaEsperado) {
+      const dif = valorIngresado - resumenCierre.totalCajaEsperado;
+      const tipo = dif > 0 ? "mayor" : "menor";
+      if (confirm(`⚠️ El dinero ingresado ($${formatCurrency(valorIngresado)}) es ${tipo} al esperado ($${formatCurrency(resumenCierre.totalCajaEsperado)}). ¿Deseas ingresar la razón de la diferencia?`)) {
+        setShowRazonModal(true);
+      }
+    } else {
+      finalizarCierreDia(valorIngresado, 0, "");
+    }
+  };
+
+  const finalizarCierreDia = async (declarado: number, diferencia: number, razon: string) => {
+    if (!cierreActivo) return;
+
+    await supabase.from("cierres_diarios").update({
+      monto_cierre_declarado: declarado,
+      monto_cierre_esperado: resumenCierre.totalCajaEsperado,
+      diferencia: declarado - resumenCierre.totalCajaEsperado,
+      razon_diferencia: razon,
+      es_cuadrado: (declarado - resumenCierre.totalCajaEsperado) === 0,
+      total_efectivo: resumenCierre.tEfectivo,
+      total_nequi: resumenCierre.tNequi,
+      total_daviplata: resumenCierre.tDaviplata,
+      total_tarjeta: resumenCierre.tTarjeta,
+      total_fiado: resumenCierre.tFiado,
+      total_gastos: resumenCierre.tGastos,
+      estado: "cerrado"
+    }).eq("id", cierreActivo.id);
+
+    setCierreActivo(null);
+    setShowCierreModal(false);
+    setShowRazonModal(false);
+    setEfectivoCierreInput("");
+    setRazonDiferencia("");
+    alert("🎉 ¡Cierre de día guardado con éxito!");
+  };
 
   const handleSelectMesa = async (mesa: Mesa) => {
     if (vista === "caja" && mesa.estado === "libre") return;
@@ -210,19 +406,10 @@ export default function HomePOS() {
     setEfectivoRecibido("");
     setClienteFiado("");
 
-    const { data: pedido } = await supabase
-      .from("pedidos")
-      .select("id")
-      .eq("mesa_id", mesa.id)
-      .eq("estado", "abierto")
-      .single();
+    const { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", mesa.id).eq("estado", "abierto").single();
 
     if (pedido) {
-      const { data: items } = await supabase
-        .from("pedido_items")
-        .select("*, productos(*)")
-        .eq("pedido_id", pedido.id);
-
+      const { data: items } = await supabase.from("pedido_items").select("*, productos(*)").eq("pedido_id", pedido.id);
       if (items) {
         const loadedCart: CartItem[] = items.map((it: any) => ({
           producto: it.productos,
@@ -244,16 +431,9 @@ export default function HomePOS() {
     if (vista === "caja") return;
     setCart((prev) => {
       const isAdicion = initialItemsCount > 0;
-      const existing = prev.find(
-        (item) => item.producto.id === producto.id && item.es_adicion === isAdicion
-      );
-
+      const existing = prev.find((item) => item.producto.id === producto.id && item.es_adicion === isAdicion);
       if (existing) {
-        return prev.map((item) =>
-          item.producto.id === producto.id && item.es_adicion === isAdicion
-            ? { ...item, cantidad: item.cantidad + 1 }
-            : item
-        );
+        return prev.map((item) => item.producto.id === producto.id && item.es_adicion === isAdicion ? { ...item, cantidad: item.cantidad + 1 } : item);
       }
       return [...prev, { producto, cantidad: 1, es_adicion: isAdicion }];
     });
@@ -262,81 +442,52 @@ export default function HomePOS() {
   const updateQuantity = (productoId: number, delta: number, esAdicion: boolean = false) => {
     if (vista === "caja") return;
     setCart((prev) =>
-      prev
-        .map((item) => {
-          if (item.producto.id === productoId && item.es_adicion === esAdicion) {
-            const newQty = item.cantidad + delta;
-            return newQty > 0 ? { ...item, cantidad: newQty } : null;
-          }
-          return item;
-        })
-        .filter(Boolean) as CartItem[]
+      prev.map((item) => {
+        if (item.producto.id === productoId && item.es_adicion === esAdicion) {
+          const newQty = item.cantidad + delta;
+          return newQty > 0 ? { ...item, cantidad: newQty } : null;
+        }
+        return item;
+      }).filter(Boolean) as CartItem[]
     );
   };
 
   const subtotalAmount = useMemo(() => cart.reduce((acc, item) => acc + item.producto.precio * item.cantidad, 0), [cart]);
 
   const discountVal = useMemo(() => {
-    const val = Number(discountInput) || 0;
+    const val = parseCurrencyToNumber(discountInput);
     return discountType === "porcentaje" ? (subtotalAmount * val) / 100 : val;
   }, [discountInput, discountType, subtotalAmount]);
 
   const finalTotal = useMemo(() => Math.max(0, subtotalAmount - discountVal), [subtotalAmount, discountVal]);
-
   const totalPagado = useMemo(() => pagos.reduce((acc, p) => acc + p.monto, 0), [pagos]);
   const saldoPendiente = useMemo(() => Math.max(0, finalTotal - totalPagado), [finalTotal, totalPagado]);
 
-  // EFECTO: Rellenar por defecto "monto a asignar" con el total o saldo pendiente
   useEffect(() => {
     if (showCheckout) {
-      setMontoIngresado(saldoPendiente > 0 ? saldoPendiente.toString() : "");
+      setMontoIngresado(saldoPendiente > 0 ? formatCurrency(saldoPendiente) : "");
     }
   }, [showCheckout, saldoPendiente]);
 
-  // Función para Pago Exacto con un solo clic
   const handlePagoExacto = () => {
-    setMontoIngresado(saldoPendiente.toString());
+    setMontoIngresado(formatCurrency(saldoPendiente));
     if (currentMetodo === "efectivo") {
-      setEfectivoRecibido(saldoPendiente.toString());
+      setEfectivoRecibido(formatCurrency(saldoPendiente));
     }
   };
 
   const handleAgregarPago = () => {
-    const monto = Number(montoIngresado);
-    if (!monto || monto <= 0) {
-      alert("Ingresa un monto válido a pagar.");
-      return;
-    }
+    const monto = parseCurrencyToNumber(montoIngresado);
+    if (!monto || monto <= 0) return alert("Ingresa un monto válido a pagar.");
 
     if (currentMetodo === "efectivo") {
-      const recibido = Number(efectivoRecibido);
-      if (recibido < monto) {
-        alert("El dinero en efectivo recibido es menor al monto a pagar asignado.");
-        return;
-      }
+      const recibido = parseCurrencyToNumber(efectivoRecibido);
+      if (recibido < monto) return alert("El dinero recibido en efectivo es menor al monto asignado.");
       const cambio = recibido - monto;
-      setPagos((prev) => [
-        ...prev,
-        {
-          metodo: "efectivo",
-          monto,
-          montoEntregadoEfectivo: recibido,
-          cambioEfectivo: cambio,
-        },
-      ]);
+      setPagos((prev) => [...prev, { metodo: "efectivo", monto, montoEntregadoEfectivo: recibido, cambioEfectivo: cambio }]);
     } else if (currentMetodo === "fiado") {
-      if (!clienteFiado.trim()) {
-        alert("Debes indicar el nombre de la persona a la que le vas a fiar.");
-        return;
-      }
-      setPagos((prev) => [
-        ...prev,
-        {
-          metodo: "fiado",
-          monto,
-          clienteFiado: clienteFiado.trim(),
-        },
-      ]);
+      if (!clienteFiado.trim()) return alert("Debes indicar el nombre de la persona a la que le vas a fiar.");
+      setPagos((prev) => [...prev, { metodo: "fiado", monto, clienteFiado: clienteFiado.trim() }]);
     } else {
       setPagos((prev) => [...prev, { metodo: currentMetodo, monto }]);
     }
@@ -354,19 +505,13 @@ export default function HomePOS() {
 
     await supabase.from("mesas").update({ estado: "pendiente_servir" }).eq("id", selectedMesa.id);
 
-    let { data: pedido } = await supabase
-      .from("pedidos")
-      .select("id")
-      .eq("mesa_id", selectedMesa.id)
-      .eq("estado", "abierto")
-      .single();
+    let { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", selectedMesa.id).eq("estado", "abierto").single();
 
     if (!pedido) {
       const { data: newPedido } = await supabase
         .from("pedidos")
         .insert({ mesa_id: selectedMesa.id, total: subtotalAmount, estado: "abierto", estado_pedido: "pendiente_servir" })
-        .select()
-        .single();
+        .select().single();
       pedido = newPedido;
     } else {
       await supabase.from("pedidos").update({ total: subtotalAmount, estado_pedido: "pendiente_servir" }).eq("id", pedido.id);
@@ -382,15 +527,6 @@ export default function HomePOS() {
         es_adicion: item.es_adicion || false,
       }));
       await supabase.from("pedido_items").insert(itemsToInsert);
-
-      for (const item of cart) {
-        const { data: prodData } = await supabase.from("productos").select("stock").eq("id", item.producto.id).single();
-        if (prodData) {
-          const currentStock = prodData.stock ?? 50;
-          const newStock = Math.max(0, currentStock - item.cantidad);
-          await supabase.from("productos").update({ stock: newStock, disponible: newStock > 0 }).eq("id", item.producto.id);
-        }
-      }
     }
 
     fetchData();
@@ -421,18 +557,9 @@ export default function HomePOS() {
 
   const handleFinalizeSale = async () => {
     if (!selectedMesa) return;
+    if (saldoPendiente > 0) return alert(`No se puede liberar la mesa. Aún hay un saldo pendiente de $${formatCurrency(saldoPendiente)}`);
 
-    if (saldoPendiente > 0) {
-      alert(`No se puede liberar la mesa. Aún hay un saldo pendiente de $${formatCurrency(saldoPendiente)}`);
-      return;
-    }
-
-    const itemsSummary = cart.map((i) => ({
-      nombre: i.producto.nombre,
-      cantidad: i.cantidad,
-      precio: i.producto.precio,
-    }));
-
+    const itemsSummary = cart.map((i) => ({ nombre: i.producto.nombre, cantidad: i.cantidad, precio: i.producto.precio }));
     const fiadoItem = pagos.find((p) => p.metodo === "fiado");
 
     await supabase.from("ventas").insert({
@@ -464,7 +591,7 @@ export default function HomePOS() {
   const cartAdiciones = useMemo(() => cart.filter((i) => i.es_adicion), [cart]);
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans antialiased flex flex-col selection:bg-pink-500 selection:text-white">
+    <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans antialiased flex flex-col selection:bg-pink-500 selection:text-white relative">
       {/* HEADER */}
       <header className="shrink-0 bg-slate-900/95 backdrop-blur-md border-b border-pink-500/30 px-4 sm:px-8 py-3.5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-2xl z-40">
         <div className="flex items-center gap-3">
@@ -512,12 +639,12 @@ export default function HomePOS() {
             )}
           </button>
 
-          <Link
-            href="/admin"
+          <button
+            onClick={handleAdminAccess}
             className="flex items-center justify-center gap-1.5 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs sm:text-sm rounded-xl shadow-[0_0_15px_rgba(6,182,212,0.4)] transition-all cursor-pointer active:scale-95"
           >
             <ShieldCheck className="w-4 h-4" /> ADMIN
-          </Link>
+          </button>
         </div>
       </header>
 
@@ -641,7 +768,6 @@ export default function HomePOS() {
                           : "bg-cyan-950/40 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.25)] hover:shadow-[0_0_30px_rgba(6,182,212,0.4)]"
                       }`}
                     >
-                      {/* HEADER TARJETA: NOMBRE MESA Y BADGE SVG CON COLOR SEGÚN ESTADO */}
                       <div className="flex justify-between items-center z-10">
                         <h3 className="font-black text-xl text-white tracking-wide">{mesa.nombre}</h3>
                         <span className={`text-[10px] font-black px-2.5 py-1 rounded-full uppercase flex items-center gap-1 tracking-wider shadow-md ${
@@ -661,7 +787,6 @@ export default function HomePOS() {
                         </span>
                       </div>
 
-                      {/* CENTRO: MANTENEMOS TUS IMÁGENES DENTRO DEL DISEÑO MEJORADO */}
                       <div className="flex-1 flex flex-col justify-center items-center my-1 relative z-0">
                         <img 
                           src={isLibre ? "/mesa1.png" : "/mesa2.png"} 
@@ -681,7 +806,6 @@ export default function HomePOS() {
                         </span>
                       </div>
 
-                      {/* PIE TARJETA: BOTONES ESTILIZADOS SVG POR ESTADO */}
                       <div className="pt-2 border-t border-slate-800/80 z-10">
                         {vista === "caja" ? (
                           <button
@@ -730,11 +854,7 @@ export default function HomePOS() {
             </main>
           ) : (
             <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative h-full">
-              
-              {/* CONTENEDOR PRINCIPAL IZQUIERDO (PRODUCTOS Y BUSCADOR) */}
               <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-                
-                {/* 1er MENÚ FIJO EN LA PARTE SUPERIOR (BUSCADOR, VOLVER Y CATEGORÍAS) */}
                 <div className="shrink-0 bg-slate-900 border-b border-slate-800 p-3 sm:p-4 shadow-md space-y-2 z-20">
                   <div className="flex items-center justify-between gap-2">
                     <button
@@ -756,7 +876,6 @@ export default function HomePOS() {
                     </div>
                   </div>
 
-                  {/* CATEGORÍAS EN SCROLL HORIZONTAL */}
                   <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
                     {categories.map((cat) => (
                       <button
@@ -780,7 +899,6 @@ export default function HomePOS() {
                   )}
                 </div>
 
-                {/* LISTADO DE PRODUCTOS */}
                 <div className="flex-1 p-3 sm:p-6 overflow-y-auto pb-28 lg:pb-6">
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                     {filteredProducts.map((p) => (
@@ -806,13 +924,9 @@ export default function HomePOS() {
                     ))}
                   </div>
                 </div>
-
               </div>
 
-              {/* 2do MENÚ FIJO INFERIOR EN MÓVIL Y PANEL LATERAL EN ESCRITORIO */}
               <div className="fixed lg:relative bottom-0 left-0 right-0 z-30 bg-slate-900/95 border-t lg:border-l border-slate-800 shadow-2xl transition-all duration-300">
-                
-                {/* BARRA MÓVIL SIEMPRE VISIBLE ABAJO */}
                 <div className="lg:hidden p-3.5 bg-slate-950 flex items-center justify-between border-b border-slate-800">
                   <div>
                     <span className="text-[10px] font-black uppercase text-pink-400 block">{selectedMesa.nombre}</span>
@@ -823,7 +937,6 @@ export default function HomePOS() {
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* BOTÓN CON FLECHITA PARA DESPLEGAR/VER PRODUCTOS */}
                     <button
                       onClick={() => setShowMobileCart(!showMobileCart)}
                       className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-pink-400 hover:bg-slate-800 transition-all flex items-center justify-center cursor-pointer"
@@ -855,7 +968,6 @@ export default function HomePOS() {
                   </div>
                 </div>
 
-                {/* CONTENIDO DEL DESGLOSE DE PRODUCTOS (DESPLEGABLE MÓVIL Y SIEMPRE VISIBLE EN PC) */}
                 <div className={`${showMobileCart ? "block" : "hidden lg:block"} w-full lg:w-96 p-4 sm:p-5 flex flex-col justify-between max-h-[60vh] lg:max-h-none overflow-y-auto`}>
                   <div>
                     <h2 className="hidden lg:flex font-black text-lg text-white items-center gap-2 pb-3 border-b border-slate-800">
@@ -907,12 +1019,280 @@ export default function HomePOS() {
                     )}
                   </div>
                 </div>
-
               </div>
-
             </div>
           )}
         </>
+      )}
+
+      {/* BOTÓN FLOTANTE Y MENÚ DESPLEGABLE (...) */}
+      <div className="fixed bottom-6 right-6 z-50">
+        {showFloatingMenu && (
+          <div className="mb-3 bg-slate-900 border border-pink-500/40 p-2 rounded-2xl shadow-2xl flex flex-col gap-1.5 w-52 animate-fadeIn">
+            <button
+              onClick={() => { setShowAperturaModal(true); setShowFloatingMenu(false); }}
+              className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
+            >
+              <Calendar className="w-4 h-4 text-emerald-400" /> 1. Apertura de Día
+            </button>
+            <button
+              onClick={() => { setShowGastoModal(true); setShowFloatingMenu(false); }}
+              className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
+            >
+              <PlusCircle className="w-4 h-4 text-rose-400" /> 2. Compra de Insumos
+            </button>
+            <button
+              onClick={async () => {
+                const res = await calcularTotalesTurno();
+                setResumenCierre(res);
+                setShowCobroTurnoModal(true);
+                setShowFloatingMenu(false);
+              }}
+              className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
+            >
+              <DollarSign className="w-4 h-4 text-cyan-400" /> 3. Cobro de Turno
+            </button>
+            <button
+              onClick={handleOpenCierreModal}
+              className="px-3 py-2 text-left text-xs font-black text-slate-200 hover:bg-pink-500 hover:text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer"
+            >
+              <Lock className="w-4 h-4 text-amber-400" /> 4. Cierre de Día
+            </button>
+          </div>
+        )}
+
+        <button
+          onClick={() => setShowFloatingMenu(!showFloatingMenu)}
+          className="w-14 h-14 rounded-full bg-gradient-to-tr from-pink-500 to-purple-600 text-white shadow-[0_0_25px_rgba(236,72,153,0.6)] flex items-center justify-center font-black transition-all hover:scale-110 active:scale-95 cursor-pointer"
+        >
+          <MoreVertical className="w-6 h-6" />
+        </button>
+      </div>
+
+      {/* MODAL CLAVE ADMIN */}
+      {showAdminPinModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-xs w-full shadow-2xl relative space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-sm text-white flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-pink-400" /> Acceso Administrador
+              </h3>
+              <button onClick={() => setShowAdminPinModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-400 block mb-1">Ingresa el PIN de Acceso:</label>
+              <input
+                type="password"
+                placeholder="****"
+                maxLength={4}
+                value={pinInput}
+                onChange={(e) => setPinInput(e.target.value)}
+                className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-center text-lg font-black tracking-widest text-white focus:outline-none focus:border-pink-500"
+              />
+            </div>
+            <button
+              onClick={handleVerifyPin}
+              className="w-full py-3 bg-pink-500 hover:bg-pink-400 text-white font-black text-xs uppercase rounded-xl transition-all cursor-pointer"
+            >
+              Ingresar al Panel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL APERTURA DE DÍA (CON FORMATEO MÁSCARA EN TIEMPO REAL) */}
+      {showAperturaModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-sm text-white flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-emerald-400" /> Apertura de Día
+              </h3>
+              <button onClick={() => setShowAperturaModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-bold text-slate-400 block mb-1">Fecha del Día Actual:</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    disabled={!editFecha}
+                    value={fechaApertura}
+                    onChange={(e) => setFechaApertura(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white disabled:opacity-70"
+                  />
+                  <button
+                    onClick={() => setEditFecha(!editFecha)}
+                    className="p-2 bg-slate-800 hover:bg-slate-700 text-pink-400 rounded-xl cursor-pointer"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-400 block mb-1">¿Con cuánta plata iniciamos el día?</label>
+                <input
+                  type="text"
+                  placeholder="Ej: 50.000"
+                  value={montoInicialFormatted}
+                  onChange={(e) => setMontoInicialFormatted(formatCurrency(e.target.value))}
+                  className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm font-black text-emerald-400 focus:outline-none focus:border-emerald-500 font-mono"
+                />
+              </div>
+            </div>
+
+            <button
+              onClick={handleAbrirDia}
+              className="w-full py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs uppercase rounded-xl transition-all cursor-pointer shadow-lg active:scale-95"
+            >
+              Aceptar e Iniciar Jornada
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL COMPRA INSUMOS */}
+      {showGastoModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-sm text-white flex items-center gap-2">
+                <PlusCircle className="w-4 h-4 text-rose-400" /> Registrar Compra de Insumos
+              </h3>
+              <button onClick={() => setShowGastoModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-bold text-slate-400 block mb-1">Descripción del Insumo / Producto:</label>
+                <input
+                  type="text"
+                  placeholder="Ej: Leche, Vasos, Café..."
+                  value={gastoDesc}
+                  onChange={(e) => setGastoDesc(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-400 block mb-1">Monto Pagado ($):</label>
+                <input
+                  type="text"
+                  placeholder="Ej: 25.000"
+                  value={gastoMonto}
+                  onChange={(e) => setGastoMonto(formatCurrency(e.target.value))}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-rose-400 font-mono"
+                />
+              </div>
+            </div>
+
+            <button
+              onClick={handleAddGastoInsumos}
+              className="w-full py-3 bg-rose-500 hover:bg-rose-400 text-white font-black text-xs uppercase rounded-xl transition-all cursor-pointer"
+            >
+              Guardar Insumo
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL COBRO DE TURNO */}
+      {showCobroTurnoModal && resumenCierre && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-sm text-white flex items-center gap-2">
+                <DollarSign className="w-4 h-4 text-cyan-400" /> Resumen del Turno
+              </h3>
+              <button onClick={() => setShowCobroTurnoModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
+            </div>
+
+            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs font-bold">
+              <div className="flex justify-between text-slate-300"><span>Transferencias (Nequi/Davi):</span><span className="font-mono text-cyan-400">${formatCurrency(resumenCierre.tTransferencias)}</span></div>
+              <div className="flex justify-between text-slate-300"><span>Tarjeta:</span><span className="font-mono text-cyan-400">${formatCurrency(resumenCierre.tTarjeta)}</span></div>
+              <div className="flex justify-between text-slate-300"><span>Fiado:</span><span className="font-mono text-amber-400">${formatCurrency(resumenCierre.tFiado)}</span></div>
+              <div className="flex justify-between text-emerald-300 pt-1 border-t border-slate-900"><span>Efectivo Ventas:</span><span className="font-mono">${formatCurrency(resumenCierre.tEfectivo)}</span></div>
+              <div className="flex justify-between text-emerald-300"><span>Base Inicio de Día:</span><span className="font-mono">${formatCurrency(resumenCierre.baseInicial)}</span></div>
+              <div className="flex justify-between text-rose-400"><span>Compra Insumos:</span><span className="font-mono">-${formatCurrency(resumenCierre.tGastos)}</span></div>
+              <div className="flex justify-between text-sm font-black text-white pt-2 border-t border-slate-800"><span>Caja Esperada:</span><span className="font-mono text-emerald-400">${formatCurrency(resumenCierre.totalCajaEsperado)}</span></div>
+            </div>
+
+            <button onClick={() => setShowCobroTurnoModal(false)} className="w-full py-2.5 bg-slate-800 text-slate-200 font-black text-xs uppercase rounded-xl">Cerrar Resumen</button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CIERRE DE DÍA */}
+      {showCierreModal && resumenCierre && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl relative space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-base text-white flex items-center gap-2">
+                <Lock className="w-5 h-5 text-amber-400" /> Cierre de Día
+              </h3>
+              <button onClick={() => setShowCierreModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
+            </div>
+
+            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs font-bold">
+              <div className="flex justify-between text-slate-400"><span>Transferencias:</span><span className="font-mono text-slate-200">${formatCurrency(resumenCierre.tTransferencias)}</span></div>
+              <div className="flex justify-between text-slate-400"><span>Tarjeta:</span><span className="font-mono text-slate-200">${formatCurrency(resumenCierre.tTarjeta)}</span></div>
+              <div className="flex justify-between text-slate-400"><span>Fiado:</span><span className="font-mono text-amber-400">${formatCurrency(resumenCierre.tFiado)}</span></div>
+              <div className="flex justify-between text-emerald-400 font-black pt-1 border-t border-slate-900"><span>Efectivo Ventas:</span><span className="font-mono">${formatCurrency(resumenCierre.tEfectivo)}</span></div>
+              <div className="flex justify-between text-emerald-400 font-black"><span>Inicio de Día (Base):</span><span className="font-mono">${formatCurrency(resumenCierre.baseInicial)}</span></div>
+              <div className="flex justify-between text-rose-400 font-black"><span>Compra de Insumos:</span><span className="font-mono">-${formatCurrency(resumenCierre.tGastos)}</span></div>
+              <div className="flex justify-between text-sm font-black text-white pt-2 border-t border-slate-800">
+                <span>TOTAL A TENER EN CAJA:</span>
+                <span className="font-mono text-emerald-400 text-base">${formatCurrency(resumenCierre.totalCajaEsperado)}</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-amber-300 block mb-1">¿Con cuánto dinero cierras caja?</label>
+              <input
+                type="text"
+                placeholder="Digita el valor en efectivo real"
+                value={efectivoCierreInput}
+                onChange={(e) => setEfectivoCierreInput(formatCurrency(e.target.value))}
+                className="w-full px-3.5 py-2.5 bg-slate-950 border border-amber-500/50 rounded-xl text-sm font-black text-white font-mono focus:outline-none"
+              />
+            </div>
+
+            <button
+              onClick={handleValidarCierreEfectivo}
+              className="w-full py-3 bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 font-black text-xs uppercase rounded-xl transition-all cursor-pointer shadow-lg"
+            >
+              Procesar Cierre de Día
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL RAZÓN DE DIFERENCIA */}
+      {showRazonModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
+            <h3 className="font-black text-sm text-rose-400 flex items-center gap-2 uppercase">
+              <AlertTriangle className="w-5 h-5 text-rose-500" /> Valor Inexacto
+            </h3>
+            <p className="text-xs font-bold text-slate-300">
+              ¿Razón por la cual no es igual el dinero ingresado con la base y ventas en efectivo?
+            </p>
+            <textarea
+              rows={3}
+              placeholder="Explica el motivo (ej: cambio mal entregado, pago no registrado...)"
+              value={razonDiferencia}
+              onChange={(e) => setRazonDiferencia(e.target.value)}
+              className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-rose-500"
+            />
+            <button
+              onClick={() => finalizarCierreDia(parseCurrencyToNumber(efectivoCierreInput), parseCurrencyToNumber(efectivoCierreInput) - resumenCierre.totalCajaEsperado, razonDiferencia)}
+              className="w-full py-3 bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase rounded-xl cursor-pointer"
+            >
+              Aceptar y Finalizar Cierre
+            </button>
+          </div>
+        </div>
       )}
 
       {/* MODAL COBRO EN CAJA INTELIGENTE */}
@@ -930,7 +1310,6 @@ export default function HomePOS() {
                   </button>
                 </div>
 
-                {/* RESUMEN CONSUMO */}
                 <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-3 max-h-48 overflow-y-auto pr-1">
                   {cartIniciales.length > 0 && (
                     <div>
@@ -965,16 +1344,15 @@ export default function HomePOS() {
                   )}
                 </div>
 
-                {/* APLICACIÓN DE DESCUENTO */}
                 <div className="bg-slate-950/60 p-3 rounded-2xl border border-slate-800 mb-4 flex items-center justify-between gap-3">
                   <span className="text-xs font-bold text-slate-300 flex items-center gap-1">
                     <DollarSign className="w-4 h-4 text-emerald-400" /> Descuento:
                   </span>
                   <div className="flex items-center gap-2">
                     <input
-                      type="number"
+                      type="text"
                       value={discountInput}
-                      onChange={(e) => setDiscountInput(e.target.value)}
+                      onChange={(e) => setDiscountInput(discountType === "monto" ? formatCurrency(e.target.value) : e.target.value)}
                       className="w-20 px-2 py-1 bg-slate-900 border border-slate-800 rounded-lg text-xs font-bold text-right text-white"
                     />
                     <select
@@ -988,7 +1366,6 @@ export default function HomePOS() {
                   </div>
                 </div>
 
-                {/* TOTALES */}
                 <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-1.5">
                   <div className="flex justify-between text-xs font-bold text-slate-400">
                     <span>Subtotal:</span>
@@ -1006,14 +1383,12 @@ export default function HomePOS() {
                   </div>
                 </div>
 
-                {/* SECCIÓN CAJA INTELIGENTE */}
                 <div className="bg-slate-950 p-4 rounded-2xl border border-pink-500/30 mb-4 space-y-3">
                   <div className="flex justify-between items-center">
                     <h4 className="text-xs font-black text-pink-300 uppercase tracking-wider flex items-center gap-1.5">
                       <Wallet className="w-4 h-4 text-pink-400" /> Registrar Forma de Pago
                     </h4>
 
-                    {/* BOTÓN PAGO EXACTO RÁPIDO */}
                     <button
                       onClick={handlePagoExacto}
                       className="px-2.5 py-1 bg-emerald-500/20 border border-emerald-500/50 hover:bg-emerald-500 hover:text-slate-950 text-emerald-300 text-[10px] font-black uppercase rounded-lg transition-all flex items-center gap-1 cursor-pointer active:scale-95"
@@ -1042,11 +1417,11 @@ export default function HomePOS() {
                     <div>
                       <label className="text-[10px] font-black text-slate-400 block mb-1">Monto a Asignar:</label>
                       <input
-                        type="number"
-                        placeholder={`Ej: ${saldoPendiente}`}
+                        type="text"
+                        placeholder={`Ej: ${formatCurrency(saldoPendiente)}`}
                         value={montoIngresado}
-                        onChange={(e) => setMontoIngresado(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-pink-500"
+                        onChange={(e) => setMontoIngresado(formatCurrency(e.target.value))}
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-pink-500 font-mono"
                       />
                     </div>
 
@@ -1054,20 +1429,19 @@ export default function HomePOS() {
                       <div>
                         <label className="text-[10px] font-black text-amber-400 block mb-1">Billete Entregado:</label>
                         <input
-                          type="number"
-                          placeholder="Ej: 20000, 50000"
+                          type="text"
+                          placeholder="Ej: 20.000, 50.000"
                           value={efectivoRecibido}
-                          onChange={(e) => setEfectivoRecibido(e.target.value)}
-                          className="w-full px-3 py-2 bg-slate-900 border border-amber-500/40 rounded-xl text-xs font-bold text-amber-300 focus:outline-none"
+                          onChange={(e) => setEfectivoRecibido(formatCurrency(e.target.value))}
+                          className="w-full px-3 py-2 bg-slate-900 border border-amber-500/40 rounded-xl text-xs font-bold text-amber-300 focus:outline-none font-mono"
                         />
                         
-                        {/* ATAJOS DE BILLETES EN EFECTIVO */}
                         <div className="flex items-center gap-1 mt-1.5 flex-wrap">
                           {[10000, 20000, 50000, 100000].map((val) => (
                             <button
                               key={val}
                               type="button"
-                              onClick={() => setEfectivoRecibido(val.toString())}
+                              onClick={() => setEfectivoRecibido(formatCurrency(val))}
                               className="px-1.5 py-0.5 bg-amber-500/10 hover:bg-amber-500 hover:text-slate-950 text-amber-400 border border-amber-500/30 rounded text-[9px] font-mono font-bold transition-all cursor-pointer"
                             >
                               ${formatCurrency(val / 1000)}k
@@ -1075,7 +1449,7 @@ export default function HomePOS() {
                           ))}
                           <button
                             type="button"
-                            onClick={() => setEfectivoRecibido(montoIngresado || saldoPendiente.toString())}
+                            onClick={() => setEfectivoRecibido(montoIngresado || formatCurrency(saldoPendiente))}
                             className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] font-bold transition-all cursor-pointer"
                           >
                             Exacto
@@ -1098,16 +1472,15 @@ export default function HomePOS() {
                     )}
                   </div>
 
-                  {currentMetodo === "efectivo" && Number(efectivoRecibido) > 0 && Number(montoIngresado) > 0 && (
+                  {currentMetodo === "efectivo" && parseCurrencyToNumber(efectivoRecibido) > 0 && parseCurrencyToNumber(montoIngresado) > 0 && (
                     <div className="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-xl flex justify-between items-center text-xs font-black text-amber-300">
                       <span>Devuelta / Cambio:</span>
                       <span className="font-mono text-sm">
-                        ${formatCurrency(Math.max(0, Number(efectivoRecibido) - Number(montoIngresado)))}
+                        ${formatCurrency(Math.max(0, parseCurrencyToNumber(efectivoRecibido) - parseCurrencyToNumber(montoIngresado)))}
                       </span>
                     </div>
                   )}
 
-                  {/* BOTÓN AHORA CON MUCHO MÁS CONTRASTE Y VISIBILIDAD */}
                   <button
                     onClick={handleAgregarPago}
                     className="w-full py-2.5 bg-pink-600 hover:bg-pink-500 text-white font-black text-xs uppercase rounded-xl border border-pink-400 shadow-[0_0_15px_rgba(236,72,153,0.4)] transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1.5"
@@ -1116,7 +1489,6 @@ export default function HomePOS() {
                   </button>
                 </div>
 
-                {/* DESGLOSE DE PAGOS INGRESADOS */}
                 {pagos.length > 0 && (
                   <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-2">
                     <h4 className="text-[10px] font-black text-slate-400 uppercase">Pagos Registrados:</h4>
@@ -1141,7 +1513,6 @@ export default function HomePOS() {
                   </div>
                 )}
 
-                {/* ALERTA DE SALDO / DEUDA */}
                 <div className="mb-4">
                   {saldoPendiente > 0 ? (
                     <div className="p-3 bg-rose-500/10 border border-rose-500/40 rounded-2xl flex items-center justify-between text-xs font-black text-rose-400">
