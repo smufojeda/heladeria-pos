@@ -34,7 +34,8 @@ import {
   Archive,
   History,
   CheckCircle2,
-  FileText
+  FileText,
+  SlidersHorizontal
 } from "lucide-react";
 
 interface PagoParcial {
@@ -115,17 +116,22 @@ export default function AdminDashboard() {
   const [cierresDiarios, setCierresDiarios] = useState<CierreDiarioRecord[]>([]);
   const [cierresSemanales, setCierresSemanales] = useState<CierreSemanal[]>([]);
   const [loading, setLoading] = useState(true);
-  const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
 
-  // Toggle de items por comanda (Ojito)
+  // ESTADOS DE DESPLIEGUE (OJITOS) - TODO INICIA COMPRIMIDO (FALSE)
+  const [showKPIs, setShowKPIs] = useState<boolean>(false);
+  const [showCierresDiarios, setShowCierresDiarios] = useState<boolean>(false);
+  const [showStock, setShowStock] = useState<boolean>(false);
+  const [showHistorialDias, setShowHistorialDias] = useState<boolean>(false);
+
+  const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const [openItems, setOpenItems] = useState<Record<number, boolean>>({});
 
-  // Toggles de Ojito Minimizado/Desplegado para cada Gráfico
+  // Toggles de Ojito Minimizado/Desplegado para Gráficos
   const [showChartMetodos, setShowChartMetodos] = useState<boolean>(false);
   const [showChartProductos, setShowChartProductos] = useState<boolean>(false);
   const [showChartTopDias, setShowChartTopDias] = useState<boolean>(false);
 
-  // Modales
+  // Modales Estándar
   const [selectedFiado, setSelectedFiado] = useState<Venta | null>(null);
   const [newPaymentMethod, setNewPaymentMethod] = useState<"efectivo" | "nequi" | "daviplata" | "tarjeta">("efectivo");
   const [showAllFiadosModal, setShowAllFiadosModal] = useState(false);
@@ -140,6 +146,19 @@ export default function AdminDashboard() {
   const [showCerrarSemanaModal, setShowCerrarSemanaModal] = useState(false);
   const [showHistorialSemanalModal, setShowHistorialSemanalModal] = useState(false);
   const [selectedSemanaDetalle, setSelectedSemanaDetalle] = useState<CierreSemanal | null>(null);
+
+  // MODAL DE CONFIRMACIÓN PERSONALIZADO PARA ELIMINAR
+  const [confirmModalData, setConfirmModalData] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => Promise<void>;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: async () => {},
+  });
 
   const loadData = async () => {
     setLoading(true);
@@ -201,6 +220,107 @@ export default function AdminDashboard() {
     setOpenItems((prev) => ({ ...prev, [ventaId]: !prev[ventaId] }));
   };
 
+  // Helper para abrir el modal de confirmación personalizado
+  const requestConfirmation = (title: string, message: string, onConfirmAction: () => Promise<void>) => {
+    setConfirmModalData({
+      isOpen: true,
+      title,
+      message,
+      onConfirm: async () => {
+        await onConfirmAction();
+        setConfirmModalData((prev) => ({ ...prev, isOpen: false }));
+      },
+    });
+  };
+
+  // --- FUNCIONES MANUALLY DE ELIMINACIÓN INDIVIDUAL ---
+
+  // 1. Eliminar Cierre Diario
+  const handleDeleteCierreDiario = (id: number, fecha: string) => {
+    requestConfirmation(
+      "Eliminar Cierre Diario",
+      `¿Estás seguro de eliminar el registro de Cierre Diario del día ${fecha}? Esta acción eliminará el historial de caja de esta fecha.`,
+      async () => {
+        await supabase.from("cierres_diarios").delete().eq("id", id);
+        loadData();
+      }
+    );
+  };
+
+  // 2. Eliminar Venta/Comanda individual
+  const handleDeleteVenta = (id: number) => {
+    requestConfirmation(
+      "Eliminar Comanda/Venta",
+      `¿Deseas eliminar permanentemente la comanda #${id}? El total de esta venta se descontará del reporte de ingresos.`,
+      async () => {
+        await supabase.from("ventas").delete().eq("id", id);
+        loadData();
+      }
+    );
+  };
+
+  // 3. Eliminar Gasto individual
+  const handleDeleteGasto = (id?: number) => {
+    if (!id) return;
+    requestConfirmation(
+      "Eliminar Registro de Gasto",
+      "¿Estás seguro de eliminar este gasto? El dinero invertido volverá a reflejarse en la caja neta global.",
+      async () => {
+        await supabase.from("gastos").delete().eq("id", id);
+        loadData();
+      }
+    );
+  };
+
+  // 4. Eliminar Carpeta Completa de un Día
+  const handleDeleteDia = (fecha: string) => {
+    requestConfirmation(
+      "Eliminar Día Completo",
+      `⚠️ ADVERTENCIA: ¿Estás seguro de eliminar TODOS los registros (ventas, deudas y gastos) del día ${fecha}? Esta acción no se puede deshacer.`,
+      async () => {
+        const ventasDelDia = ventasPorDia[fecha] || [];
+        const gastosDelDia = gastosPorDia[fecha] || [];
+
+        const ventaIds = ventasDelDia.map((v) => v.id);
+        const gastoIds = gastosDelDia.map((g) => g.id).filter(Boolean);
+
+        if (ventaIds.length > 0) {
+          await supabase.from("ventas").delete().in("id", ventaIds);
+        }
+        if (gastoIds.length > 0) {
+          await supabase.from("gastos").delete().in("id", gastoIds);
+        }
+
+        loadData();
+      }
+    );
+  };
+
+  // 5. Eliminar Semana Archivada
+  const handleDeleteSemanaArchivada = (id: number, fechaInicio: string, fechaFin: string) => {
+    requestConfirmation(
+      "Eliminar Semana Archivada",
+      `¿Estás seguro de borrar permanentemente el archivo semanal (${fechaInicio} a ${fechaFin})?`,
+      async () => {
+        await supabase.from("cierres_semanales").delete().eq("id", id);
+        setSelectedSemanaDetalle(null);
+        loadData();
+      }
+    );
+  };
+
+  // 6. Eliminar Producto de la Base de Datos
+  const handleDeleteProducto = (id: number, nombre: string) => {
+    requestConfirmation(
+      "Eliminar Producto del Menú",
+      `¿Deseas eliminar definitivamente "${nombre}" del menú y control de stock?`,
+      async () => {
+        await supabase.from("productos").delete().eq("id", id);
+        loadData();
+      }
+    );
+  };
+
   // Modificar Stock
   const handleSaveStock = async () => {
     if (!editingStockProduct) return;
@@ -217,26 +337,6 @@ export default function AdminDashboard() {
       loadData();
     } else {
       alert("Error al actualizar stock.");
-    }
-  };
-
-  // Eliminar un día específico
-  const handleDeleteDia = async (fecha: string) => {
-    if (confirm(`¿Estás seguro de eliminar TODOS los registros (ventas, deudas y gastos) del día ${fecha}? Esta acción no se puede deshacer.`)) {
-      const ventasDelDia = ventasPorDia[fecha] || [];
-      const gastosDelDia = gastosPorDia[fecha] || [];
-
-      const ventaIds = ventasDelDia.map((v) => v.id);
-      const gastoIds = gastosDelDia.map((g) => g.id).filter(Boolean);
-
-      if (ventaIds.length > 0) {
-        await supabase.from("ventas").delete().in("id", ventaIds);
-      }
-      if (gastoIds.length > 0) {
-        await supabase.from("gastos").delete().in("id", gastoIds);
-      }
-
-      loadData();
     }
   };
 
@@ -471,83 +571,121 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* MÉTRICAS (KPIs) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          <div className="bg-slate-900 border border-slate-800 p-4 sm:p-5 rounded-3xl flex items-center justify-between shadow-lg">
-            <div>
-              <span className="text-[10px] font-black uppercase text-slate-400 block">Total Recaudado</span>
-              <span className="text-xl sm:text-2xl font-black text-emerald-400 font-mono">${totalIngresos.toLocaleString()}</span>
+        {/* MÉTRICAS (KPIs) - CON OPCIÓN DE DESPLEGAR/OCULTAR */}
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl transition-all">
+          <button
+            onClick={() => setShowKPIs(!showKPIs)}
+            className="w-full p-4 flex items-center justify-between text-left cursor-pointer hover:bg-slate-800/60 transition-all"
+          >
+            <h3 className="text-sm font-black uppercase text-white flex items-center gap-2">
+              <TrendingUp className="w-5 h-5 text-emerald-400" /> Resumen Financiero y Métricas Globales
+            </h3>
+            <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-slate-400 text-xs font-black uppercase">
+              {showKPIs ? <EyeOff className="w-4 h-4 text-emerald-400" /> : <Eye className="w-4 h-4 text-slate-400" />}
+              <span>{showKPIs ? "Ocultar Métricas" : "Desplegar Métricas"}</span>
             </div>
-            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-emerald-500/10 rounded-2xl border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-              <DollarSign className="w-5 h-5 sm:w-6 sm:h-6" />
-            </div>
-          </div>
+          </button>
 
-          <div className="bg-slate-900 border border-slate-800 p-4 sm:p-5 rounded-3xl flex items-center justify-between shadow-lg">
-            <div>
-              <span className="text-[10px] font-black uppercase text-amber-400 block">Fiados por Cobrar</span>
-              <span className="text-xl sm:text-2xl font-black text-amber-400 font-mono">${totalFiadosPendientes.toLocaleString()}</span>
-            </div>
-            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-amber-500/10 rounded-2xl border border-amber-500/30 flex items-center justify-center text-amber-400">
-              <BookOpenCheck className="w-5 h-5 sm:w-6 sm:h-6" />
-            </div>
-          </div>
+          {showKPIs && (
+            <div className="p-4 sm:p-6 border-t border-slate-800/80 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 animate-fadeIn">
+              <div className="bg-slate-950 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-[10px] font-black uppercase text-slate-400 block">Total Recaudado</span>
+                  <span className="text-xl font-black text-emerald-400 font-mono">${totalIngresos.toLocaleString()}</span>
+                </div>
+                <div className="w-10 h-10 bg-emerald-500/10 rounded-2xl border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                  <DollarSign className="w-5 h-5" />
+                </div>
+              </div>
 
-          <div className="bg-slate-900 border border-slate-800 p-4 sm:p-5 rounded-3xl flex items-center justify-between shadow-lg">
-            <div>
-              <span className="text-[10px] font-black uppercase text-rose-400 block">Total Gastos / Compras</span>
-              <span className="text-xl sm:text-2xl font-black text-rose-400 font-mono">${totalGastosCompras.toLocaleString()}</span>
-            </div>
-            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-rose-500/10 rounded-2xl border border-rose-500/30 flex items-center justify-center text-rose-400">
-              <ShoppingCart className="w-5 h-5 sm:w-6 sm:h-6" />
-            </div>
-          </div>
+              <div className="bg-slate-950 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-[10px] font-black uppercase text-amber-400 block">Fiados por Cobrar</span>
+                  <span className="text-xl font-black text-amber-400 font-mono">${totalFiadosPendientes.toLocaleString()}</span>
+                </div>
+                <div className="w-10 h-10 bg-amber-500/10 rounded-2xl border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <BookOpenCheck className="w-5 h-5" />
+                </div>
+              </div>
 
-          <div className="bg-slate-900 border border-slate-800 p-4 sm:p-5 rounded-3xl flex items-center justify-between shadow-lg">
-            <div>
-              <span className="text-[10px] font-black uppercase text-cyan-400 block">Caja Neta Global</span>
-              <span className="text-xl sm:text-2xl font-black text-cyan-400 font-mono">${(totalIngresos - totalGastosCompras).toLocaleString()}</span>
+              <div className="bg-slate-950 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-[10px] font-black uppercase text-rose-400 block">Total Gastos / Compras</span>
+                  <span className="text-xl font-black text-rose-400 font-mono">${totalGastosCompras.toLocaleString()}</span>
+                </div>
+                <div className="w-10 h-10 bg-rose-500/10 rounded-2xl border border-rose-500/30 flex items-center justify-center text-rose-400">
+                  <ShoppingCart className="w-5 h-5" />
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-[10px] font-black uppercase text-cyan-400 block">Caja Neta Global</span>
+                  <span className="text-xl font-black text-cyan-400 font-mono">${(totalIngresos - totalGastosCompras).toLocaleString()}</span>
+                </div>
+                <div className="w-10 h-10 bg-cyan-500/10 rounded-2xl border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                  <TrendingUp className="w-5 h-5" />
+                </div>
+              </div>
             </div>
-            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-cyan-500/10 rounded-2xl border border-cyan-500/30 flex items-center justify-center text-cyan-400">
-              <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6" />
-            </div>
-          </div>
+          )}
         </div>
 
-        {/* REGISTRO DE CIERRES DIARIOS REALIZADOS */}
-        <div className="bg-slate-900 border border-amber-500/30 p-5 rounded-3xl space-y-4">
-          <h3 className="text-lg font-black text-white flex items-center gap-2">
-            <FileText className="w-5 h-5 text-amber-400" /> Registro de Cierres Diarios Realizados
-          </h3>
+        {/* REGISTRO DE CIERRES DIARIOS REALIZADOS - CON OPCIÓN DE DESPLEGAR/OCULTAR Y BORRAR */}
+        <div className="bg-slate-900 border border-amber-500/30 rounded-3xl overflow-hidden shadow-xl transition-all">
+          <button
+            onClick={() => setShowCierresDiarios(!showCierresDiarios)}
+            className="w-full p-4 flex items-center justify-between text-left cursor-pointer hover:bg-slate-800/60 transition-all"
+          >
+            <h3 className="text-sm font-black uppercase text-white flex items-center gap-2">
+              <FileText className="w-5 h-5 text-amber-400" /> Registro de Cierres Diarios ({cierresDiarios.length})
+            </h3>
+            <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-slate-400 text-xs font-black uppercase">
+              {showCierresDiarios ? <EyeOff className="w-4 h-4 text-amber-400" /> : <Eye className="w-4 h-4 text-slate-400" />}
+              <span>{showCierresDiarios ? "Ocultar Registros" : "Desplegar Registros"}</span>
+            </div>
+          </button>
 
-          {cierresDiarios.length === 0 ? (
-            <p className="text-xs text-slate-500 font-bold text-center py-4">No hay cierres diarios guardados todavía.</p>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {cierresDiarios.map((cd) => (
-                <div key={cd.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
-                  <div className="flex justify-between items-center pb-2 border-b border-slate-900">
-                    <span className="font-black text-xs text-amber-300">{cd.fecha}</span>
-                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${cd.es_cuadrado ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
-                      {cd.es_cuadrado ? "Cuadrado" : "Con Diferencia"}
-                    </span>
-                  </div>
+          {showCierresDiarios && (
+            <div className="p-4 sm:p-5 border-t border-slate-800/80 animate-fadeIn">
+              {cierresDiarios.length === 0 ? (
+                <p className="text-xs text-slate-500 font-bold text-center py-4">No hay cierres diarios guardados todavía.</p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {cierresDiarios.map((cd) => (
+                    <div key={cd.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2 relative group">
+                      <div className="flex justify-between items-center pb-2 border-b border-slate-900 pr-7">
+                        <span className="font-black text-xs text-amber-300">{cd.fecha}</span>
+                        <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${cd.es_cuadrado ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
+                          {cd.es_cuadrado ? "Cuadrado" : "Con Diferencia"}
+                        </span>
+                      </div>
 
-                  <div className="space-y-1 text-xs font-mono">
-                    <div className="flex justify-between text-slate-400"><span>Declarado:</span><span>${cd.monto_cierre_declarado?.toLocaleString()}</span></div>
-                    <div className="flex justify-between text-slate-400"><span>Esperado:</span><span>${cd.monto_cierre_esperado?.toLocaleString()}</span></div>
-                    {cd.diferencia !== 0 && (
-                      <div className="flex justify-between text-rose-400 font-bold"><span>Diferencia:</span><span>${cd.diferencia?.toLocaleString()}</span></div>
-                    )}
-                  </div>
+                      <button
+                        onClick={() => handleDeleteCierreDiario(cd.id, cd.fecha)}
+                        className="absolute top-3.5 right-3 p-1 rounded-lg bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white transition-all cursor-pointer"
+                        title="Eliminar este cierre diario"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
 
-                  {cd.razon_diferencia && (
-                    <p className="text-[10px] text-slate-400 bg-slate-900 p-2 rounded-xl italic border border-slate-800">
-                      "{cd.razon_diferencia}"
-                    </p>
-                  )}
+                      <div className="space-y-1 text-xs font-mono">
+                        <div className="flex justify-between text-slate-400"><span>Declarado:</span><span>${cd.monto_cierre_declarado?.toLocaleString()}</span></div>
+                        <div className="flex justify-between text-slate-400"><span>Esperado:</span><span>${cd.monto_cierre_esperado?.toLocaleString()}</span></div>
+                        {cd.diferencia !== 0 && (
+                          <div className="flex justify-between text-rose-400 font-bold"><span>Diferencia:</span><span>${cd.diferencia?.toLocaleString()}</span></div>
+                        )}
+                      </div>
+
+                      {cd.razon_diferencia && (
+                        <p className="text-[10px] text-slate-400 bg-slate-900 p-2 rounded-xl italic border border-slate-800">
+                          "{cd.razon_diferencia}"
+                        </p>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
           )}
         </div>
@@ -564,7 +702,7 @@ export default function AdminDashboard() {
               <h3 className="text-xs sm:text-sm font-black uppercase text-white flex items-center gap-2">
                 <BarChart3 className="w-4 h-4 text-pink-400" /> Métodos de Pago
               </h3>
-              <div className="p-1.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 group-hover:text-pink-400 transition-all flex items-center gap-1.5 text-[10px] font-black uppercase">
+              <div className="p-1.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 transition-all flex items-center gap-1.5 text-[10px] font-black uppercase">
                 {showChartMetodos ? (
                   <>
                     <EyeOff className="w-4 h-4 text-pink-400" />
@@ -615,7 +753,7 @@ export default function AdminDashboard() {
               <h3 className="text-xs sm:text-sm font-black uppercase text-white flex items-center gap-2">
                 <PieChart className="w-4 h-4 text-amber-400" /> Top Productos
               </h3>
-              <div className="p-1.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 group-hover:text-amber-400 transition-all flex items-center gap-1.5 text-[10px] font-black uppercase">
+              <div className="p-1.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 transition-all flex items-center gap-1.5 text-[10px] font-black uppercase">
                 {showChartProductos ? (
                   <>
                     <EyeOff className="w-4 h-4 text-amber-400" />
@@ -666,7 +804,7 @@ export default function AdminDashboard() {
               <h3 className="text-xs sm:text-sm font-black uppercase text-white flex items-center gap-2">
                 <Award className="w-4 h-4 text-cyan-400" /> Top 5 Mejores Días
               </h3>
-              <div className="p-1.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 group-hover:text-cyan-400 transition-all flex items-center gap-1.5 text-[10px] font-black uppercase">
+              <div className="p-1.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 transition-all flex items-center gap-1.5 text-[10px] font-black uppercase">
                 {showChartTopDias ? (
                   <>
                     <EyeOff className="w-4 h-4 text-cyan-400" />
@@ -712,285 +850,340 @@ export default function AdminDashboard() {
 
         </div>
 
-        {/* HISTORIAL Y STOCK */}
+        {/* HISTORIAL Y STOCK COMPRIMIBLES */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           
-          {/* HISTORIAL POR DÍAS */}
+          {/* HISTORIAL POR DÍAS (COMPRIMIBLE) */}
           <div className="lg:col-span-2 space-y-4">
-            <h3 className="text-lg font-black text-white flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-pink-400" /> Historial de Días
-            </h3>
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl transition-all">
+              <button
+                onClick={() => setShowHistorialDias(!showHistorialDias)}
+                className="w-full p-4 flex items-center justify-between text-left cursor-pointer hover:bg-slate-800/60 transition-all"
+              >
+                <h3 className="text-base font-black text-white flex items-center gap-2">
+                  <Calendar className="w-5 h-5 text-pink-400" /> Historial de Días ({Object.keys(ventasPorDia).length})
+                </h3>
+                <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-slate-400 text-xs font-black uppercase">
+                  {showHistorialDias ? <EyeOff className="w-4 h-4 text-pink-400" /> : <Eye className="w-4 h-4 text-slate-400" />}
+                  <span>{showHistorialDias ? "Ocultar Historial" : "Desplegar Historial"}</span>
+                </div>
+              </button>
 
-            {loading ? (
-              <div className="text-center py-12 text-slate-500 font-bold text-xs">Cargando reporte...</div>
-            ) : Object.keys(ventasPorDia).length === 0 ? (
-              <div className="text-center py-12 text-slate-500 font-bold text-xs bg-slate-900/60 rounded-3xl border border-slate-800">
-                ☕ No hay ventas registradas todavía.
-              </div>
-            ) : (
-              Object.entries(ventasPorDia).map(([fecha, ventasDia]) => {
-                const isOpen = !!openFolders[fecha];
-                const gastosDia = gastosPorDia[fecha] || [];
-
-                const totalBrutoDia = ventasDia.reduce((acc, v) => {
-                  if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
-                    return acc + v.desglose_pagos.filter((p) => p.metodo !== "fiado").reduce((s, p) => s + p.monto, 0);
-                  }
-                  return acc + (!v.metodo_pago?.toLowerCase().includes("fiado") ? v.total || 0 : 0);
-                }, 0);
-
-                const totalGastosDia = gastosDia.reduce((a, b) => a + (b.monto || 0), 0);
-                const totalNetoDia = totalBrutoDia - totalGastosDia;
-
-                const porMetodo = ventasDia.reduce((acc, v) => {
-                  if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
-                    v.desglose_pagos.forEach((p) => {
-                      const m = p.metodo.toLowerCase();
-                      acc[m] = (acc[m] || 0) + p.monto;
-                    });
-                  } else {
-                    const m = (v.metodo_pago || "efectivo").toLowerCase();
-                    acc[m] = (acc[m] || 0) + (v.total || 0);
-                  }
-                  return acc;
-                }, {} as Record<string, number>);
-
-                return (
-                  <div key={fecha} className="bg-slate-900/90 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
-                    <div className="p-4 bg-slate-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800/80">
-                      <button
-                        onClick={() => toggleFolder(fecha)}
-                        className="flex items-center gap-3 cursor-pointer text-left"
-                      >
-                        {isOpen ? <FolderOpen className="w-6 h-6 text-pink-400" /> : <Folder className="w-6 h-6 text-pink-500" />}
-                        <div>
-                          <span className="font-black text-sm text-white block">{fecha}</span>
-                          <span className="text-[10px] font-bold text-slate-400">
-                            {ventasDia.length} Transacciones | {gastosDia.length} Gastos
-                          </span>
-                        </div>
-                      </button>
-
-                      <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-end flex-wrap">
-                        <div className="text-right mr-2">
-                          <span className="text-[9px] font-black uppercase text-slate-400 block">Total Neto Día</span>
-                          <span className="font-mono text-emerald-400 font-black text-sm">${totalNetoDia.toLocaleString()}</span>
-                        </div>
-
-                        <button
-                          onClick={() => setShowGastoModal(fecha)}
-                          className="px-2.5 py-1.5 bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-black hover:bg-rose-500 hover:text-white transition-all flex items-center gap-1 cursor-pointer"
-                        >
-                          <PlusCircle className="w-3.5 h-3.5" /> Gastos
-                        </button>
-
-                        {/* BOTÓN ELIMINAR CARPETA DÍA INVENTADO/INDIVIDUAL */}
-                        <button
-                          onClick={() => handleDeleteDia(fecha)}
-                          className="p-1.5 bg-rose-500/10 hover:bg-rose-500 border border-rose-500/30 text-rose-400 hover:text-white rounded-xl transition-all cursor-pointer"
-                          title="Eliminar registro completo de este día"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-
-                        <button onClick={() => toggleFolder(fecha)} className="p-1 cursor-pointer">
-                          {isOpen ? <ChevronDown className="w-5 h-5 text-slate-400" /> : <ChevronRight className="w-5 h-5 text-slate-400" />}
-                        </button>
-                      </div>
+              {showHistorialDias && (
+                <div className="p-4 space-y-4 border-t border-slate-800/80 animate-fadeIn">
+                  {loading ? (
+                    <div className="text-center py-12 text-slate-500 font-bold text-xs">Cargando reporte...</div>
+                  ) : Object.keys(ventasPorDia).length === 0 ? (
+                    <div className="text-center py-12 text-slate-500 font-bold text-xs bg-slate-950 rounded-2xl border border-slate-800">
+                      ☕ No hay ventas registradas todavía.
                     </div>
+                  ) : (
+                    Object.entries(ventasPorDia).map(([fecha, ventasDia]) => {
+                      const isOpen = !!openFolders[fecha];
+                      const gastosDia = gastosPorDia[fecha] || [];
 
-                    {isOpen && (
-                      <div className="p-4 space-y-4 bg-slate-950/50">
-                        {/* DESGLOSE DÍA */}
-                        <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800">
-                          <h4 className="text-[10px] font-black uppercase text-pink-400 mb-2 flex items-center gap-1">
-                            <Wallet className="w-3.5 h-3.5" /> Desglose Métodos de Pago del Día:
-                          </h4>
-                          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs font-bold">
-                            <div className="p-2 bg-slate-900 rounded-xl border border-slate-800 text-slate-300">
-                              💵 Efectivo: <span className="font-mono text-emerald-400 block text-xs">${(porMetodo["efectivo"] || 0).toLocaleString()}</span>
-                            </div>
-                            <div className="p-2 bg-slate-900 rounded-xl border border-slate-800 text-slate-300">
-                              📱 Nequi: <span className="font-mono text-purple-400 block text-xs">${(porMetodo["nequi"] || 0).toLocaleString()}</span>
-                            </div>
-                            <div className="p-2 bg-slate-900 rounded-xl border border-slate-800 text-slate-300">
-                              🔴 Daviplata: <span className="font-mono text-rose-400 block text-xs">${(porMetodo["daviplata"] || 0).toLocaleString()}</span>
-                            </div>
-                            <div className="p-2 bg-slate-900 rounded-xl border border-slate-800 text-slate-300">
-                              💳 Tarjeta: <span className="font-mono text-cyan-400 block text-xs">${(porMetodo["tarjeta"] || 0).toLocaleString()}</span>
-                            </div>
-                            <div className="p-2 bg-amber-950/40 rounded-xl border border-amber-500/40 text-amber-300">
-                              📌 Fiado: <span className="font-mono text-amber-400 block text-xs">${(porMetodo["fiado"] || 0).toLocaleString()}</span>
-                            </div>
-                          </div>
-                        </div>
+                      const totalBrutoDia = ventasDia.reduce((acc, v) => {
+                        if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
+                          return acc + v.desglose_pagos.filter((p) => p.metodo !== "fiado").reduce((s, p) => s + p.monto, 0);
+                        }
+                        return acc + (!v.metodo_pago?.toLowerCase().includes("fiado") ? v.total || 0 : 0);
+                      }, 0);
 
-                        {/* GASTOS DEL DÍA CON HORA */}
-                        {gastosDia.length > 0 && (
-                          <div className="bg-rose-950/20 border border-rose-500/30 p-3 rounded-2xl space-y-2">
-                            <h4 className="text-[10px] font-black uppercase text-rose-400 flex items-center gap-1">
-                              <MinusCircle className="w-3.5 h-3.5" /> Gastos / Compras del Día (-${totalGastosDia.toLocaleString()}):
-                            </h4>
-                            <div className="space-y-1">
-                              {gastosDia.map((g, idx) => {
-                                const horaStr = g.created_at
-                                  ? new Date(g.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                                  : "";
+                      const totalGastosDia = gastosDia.reduce((a, b) => a + (b.monto || 0), 0);
+                      const totalNetoDia = totalBrutoDia - totalGastosDia;
 
-                                return (
-                                  <div key={idx} className="flex justify-between items-center text-xs font-bold text-rose-200 bg-slate-950 p-2 rounded-xl">
-                                    <div className="flex items-center gap-2">
-                                      <span>{g.descripcion}</span>
-                                      {horaStr && (
-                                        <span className="text-[9px] text-slate-400 font-mono flex items-center gap-0.5">
-                                          <Clock className="w-2.5 h-2.5" /> {horaStr}
-                                        </span>
-                                      )}
-                                    </div>
-                                    <span className="font-mono text-rose-400">-${g.monto.toLocaleString()}</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
+                      const porMetodo = ventasDia.reduce((acc, v) => {
+                        if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
+                          v.desglose_pagos.forEach((p) => {
+                            const m = p.metodo.toLowerCase();
+                            acc[m] = (acc[m] || 0) + p.monto;
+                          });
+                        } else {
+                          const m = (v.metodo_pago || "efectivo").toLowerCase();
+                          acc[m] = (acc[m] || 0) + (v.total || 0);
+                        }
+                        return acc;
+                      }, {} as Record<string, number>);
 
-                        {/* COMANDAS */}
-                        <div className="space-y-3">
-                          <h4 className="text-[10px] font-black uppercase text-slate-400">Comandas y Transacciones:</h4>
-                          {ventasDia.map((v) => {
-                            const tieneFiado = v.desglose_pagos
-                              ? v.desglose_pagos.some((p) => p.metodo === "fiado")
-                              : v.metodo_pago?.toLowerCase().includes("fiado");
+                      return (
+                        <div key={fecha} className="bg-slate-950/80 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
+                          <div className="p-3.5 bg-slate-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800/80">
+                            <button
+                              onClick={() => toggleFolder(fecha)}
+                              className="flex items-center gap-3 cursor-pointer text-left"
+                            >
+                              {isOpen ? <FolderOpen className="w-5 h-5 text-pink-400" /> : <Folder className="w-5 h-5 text-pink-500" />}
+                              <div>
+                                <span className="font-black text-xs sm:text-sm text-white block">{fecha}</span>
+                                <span className="text-[10px] font-bold text-slate-400">
+                                  {ventasDia.length} Transacciones | {gastosDia.length} Gastos
+                                </span>
+                              </div>
+                            </button>
 
-                            const clienteNombreFiado = v.cliente_nombre || v.desglose_pagos?.find((p) => p.clienteFiado)?.clienteFiado;
-                            const itemsVisibles = !!openItems[v.id];
+                            <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-end flex-wrap">
+                              <div className="text-right mr-2">
+                                <span className="text-[8px] font-black uppercase text-slate-400 block">Total Neto Día</span>
+                                <span className="font-mono text-emerald-400 font-black text-xs sm:text-sm">${totalNetoDia.toLocaleString()}</span>
+                              </div>
 
-                            return (
-                              <div
-                                key={v.id}
-                                className={`p-4 rounded-2xl border space-y-2 transition-all ${
-                                  tieneFiado ? "bg-amber-950/20 border-amber-500/60" : "bg-slate-950 border-slate-800"
-                                }`}
+                              <button
+                                onClick={() => setShowGastoModal(fecha)}
+                                className="px-2 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded-lg text-[10px] font-black hover:bg-rose-500 hover:text-white transition-all flex items-center gap-1 cursor-pointer"
                               >
-                                <div className="flex justify-between items-center pb-2 border-b border-slate-900">
-                                  <div>
-                                    <span className="font-black text-xs text-white block">Espacio #{v.numero_mesa || v.mesa_id}</span>
-                                    {tieneFiado && clienteNombreFiado && (
-                                      <span className="text-[10px] font-bold text-amber-400 flex items-center gap-1">
-                                        <User className="w-3 h-3" /> Cliente: {clienteNombreFiado}
-                                      </span>
-                                    )}
+                                <PlusCircle className="w-3 h-3" /> Gasto
+                              </button>
+
+                              {/* BOTÓN ELIMINAR CARPETA DÍA INIVIDUAL */}
+                              <button
+                                onClick={() => handleDeleteDia(fecha)}
+                                className="p-1 bg-rose-500/10 hover:bg-rose-500 border border-rose-500/30 text-rose-400 hover:text-white rounded-lg transition-all cursor-pointer"
+                                title="Eliminar registro completo de este día"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+
+                              <button onClick={() => toggleFolder(fecha)} className="p-1 cursor-pointer">
+                                {isOpen ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                              </button>
+                            </div>
+                          </div>
+
+                          {isOpen && (
+                            <div className="p-3 space-y-3 bg-slate-950/50">
+                              {/* DESGLOSE DÍA */}
+                              <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                                <h4 className="text-[9px] font-black uppercase text-pink-400 mb-1.5 flex items-center gap-1">
+                                  <Wallet className="w-3 h-3" /> Desglose Métodos de Pago del Día:
+                                </h4>
+                                <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-[11px] font-bold">
+                                  <div className="p-1.5 bg-slate-900 rounded-lg border border-slate-800 text-slate-300">
+                                    💵 Efectivo: <span className="font-mono text-emerald-400 block text-[10px]">${(porMetodo["efectivo"] || 0).toLocaleString()}</span>
                                   </div>
-
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-[10px] font-mono text-slate-400">
-                                      {new Date(v.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                                    </span>
-
-                                    <button
-                                      onClick={() => toggleItems(v.id)}
-                                      className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-pink-400 transition-all cursor-pointer flex items-center gap-1 border border-slate-800 text-[10px] font-bold"
-                                    >
-                                      {itemsVisibles ? <EyeOff className="w-3.5 h-3.5 text-pink-400" /> : <Eye className="w-3.5 h-3.5 text-slate-400" />}
-                                      <span className="hidden sm:inline">{itemsVisibles ? "Ocultar" : "Ver Items"}</span>
-                                    </button>
+                                  <div className="p-1.5 bg-slate-900 rounded-lg border border-slate-800 text-slate-300">
+                                    📱 Nequi: <span className="font-mono text-purple-400 block text-[10px]">${(porMetodo["nequi"] || 0).toLocaleString()}</span>
                                   </div>
-                                </div>
-
-                                {itemsVisibles && (
-                                  <div className="space-y-1 my-2 bg-slate-900/60 p-2.5 rounded-xl border border-slate-800/80 animate-fadeIn">
-                                    <span className="text-[9px] font-black uppercase text-slate-400 block mb-1">Detalle del Consumo:</span>
-                                    {v.items_detalle?.map((item, idx) => (
-                                      <div key={idx} className="flex justify-between text-[11px] font-bold text-slate-300">
-                                        <span>{item.cantidad}x {item.nombre}</span>
-                                        <span className="font-mono text-slate-400">${(item.precio * item.cantidad).toLocaleString()}</span>
-                                      </div>
-                                    ))}
+                                  <div className="p-1.5 bg-slate-900 rounded-lg border border-slate-800 text-slate-300">
+                                    🔴 Daviplata: <span className="font-mono text-rose-400 block text-[10px]">${(porMetodo["daviplata"] || 0).toLocaleString()}</span>
                                   </div>
-                                )}
-
-                                <div className="pt-2 border-t border-slate-900 flex justify-between items-center text-xs font-black">
-                                  <span
-                                    className={`uppercase text-[9px] px-2.5 py-1 rounded-full border ${
-                                      tieneFiado ? "bg-amber-500/20 text-amber-300 border-amber-500/50" : "bg-slate-900 text-pink-400 border-slate-800"
-                                    }`}
-                                  >
-                                    Pago: {v.metodo_pago}
-                                  </span>
-
-                                  <div className="flex items-center gap-3">
-                                    <span className="font-mono text-emerald-400 text-sm">${v.total?.toLocaleString()}</span>
-
-                                    {tieneFiado && (
-                                      <button
-                                        onClick={() => setSelectedFiado(v)}
-                                        className="px-3 py-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black text-[10px] uppercase rounded-xl hover:scale-105 transition-all cursor-pointer shadow-md"
-                                      >
-                                        Saldar Fiado
-                                      </button>
-                                    )}
+                                  <div className="p-1.5 bg-slate-900 rounded-lg border border-slate-800 text-slate-300">
+                                    💳 Tarjeta: <span className="font-mono text-cyan-400 block text-[10px]">${(porMetodo["tarjeta"] || 0).toLocaleString()}</span>
+                                  </div>
+                                  <div className="p-1.5 bg-amber-950/40 rounded-lg border border-amber-500/40 text-amber-300">
+                                    📌 Fiado: <span className="font-mono text-amber-400 block text-[10px]">${(porMetodo["fiado"] || 0).toLocaleString()}</span>
                                   </div>
                                 </div>
                               </div>
-                            );
-                          })}
+
+                              {/* GASTOS DEL DÍA CON BOTÓN ELIMINAR */}
+                              {gastosDia.length > 0 && (
+                                <div className="bg-rose-950/20 border border-rose-500/30 p-2.5 rounded-xl space-y-1.5">
+                                  <h4 className="text-[9px] font-black uppercase text-rose-400 flex items-center gap-1">
+                                    <MinusCircle className="w-3 h-3" /> Gastos / Compras (-${totalGastosDia.toLocaleString()}):
+                                  </h4>
+                                  <div className="space-y-1">
+                                    {gastosDia.map((g, idx) => {
+                                      const horaStr = g.created_at
+                                        ? new Date(g.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                                        : "";
+
+                                      return (
+                                        <div key={idx} className="flex justify-between items-center text-xs font-bold text-rose-200 bg-slate-950 p-2 rounded-lg border border-slate-800">
+                                          <div className="flex items-center gap-2">
+                                            <span>{g.descripcion}</span>
+                                            {horaStr && (
+                                              <span className="text-[9px] text-slate-400 font-mono flex items-center gap-0.5">
+                                                <Clock className="w-2.5 h-2.5" /> {horaStr}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <span className="font-mono text-rose-400">-${g.monto.toLocaleString()}</span>
+                                            <button
+                                              onClick={() => handleDeleteGasto(g.id)}
+                                              className="p-1 text-slate-500 hover:text-rose-400 transition-all cursor-pointer"
+                                              title="Eliminar gasto"
+                                            >
+                                              <Trash2 className="w-3 h-3" />
+                                            </button>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* COMANDAS Y VENTAS INDIVIDUALES CON BORRADO */}
+                              <div className="space-y-2">
+                                <h4 className="text-[9px] font-black uppercase text-slate-400">Comandas y Transacciones:</h4>
+                                {ventasDia.map((v) => {
+                                  const tieneFiado = v.desglose_pagos
+                                    ? v.desglose_pagos.some((p) => p.metodo === "fiado")
+                                    : v.metodo_pago?.toLowerCase().includes("fiado");
+
+                                  const clienteNombreFiado = v.cliente_nombre || v.desglose_pagos?.find((p) => p.clienteFiado)?.clienteFiado;
+                                  const itemsVisibles = !!openItems[v.id];
+
+                                  return (
+                                    <div
+                                      key={v.id}
+                                      className={`p-3 rounded-xl border space-y-1.5 transition-all ${
+                                        tieneFiado ? "bg-amber-950/20 border-amber-500/60" : "bg-slate-950 border-slate-800"
+                                      }`}
+                                    >
+                                      <div className="flex justify-between items-center pb-1 border-b border-slate-900">
+                                        <div>
+                                          <span className="font-black text-xs text-white block">Espacio #{v.numero_mesa || v.mesa_id}</span>
+                                          {tieneFiado && clienteNombreFiado && (
+                                            <span className="text-[10px] font-bold text-amber-400 flex items-center gap-1">
+                                              <User className="w-3 h-3" /> Cliente: {clienteNombreFiado}
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="text-[10px] font-mono text-slate-400">
+                                            {new Date(v.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                          </span>
+
+                                          <button
+                                            onClick={() => toggleItems(v.id)}
+                                            className="p-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-pink-400 transition-all cursor-pointer flex items-center gap-1 border border-slate-800 text-[9px] font-bold"
+                                          >
+                                            {itemsVisibles ? <EyeOff className="w-3 h-3 text-pink-400" /> : <Eye className="w-3 h-3 text-slate-400" />}
+                                            <span className="hidden sm:inline">{itemsVisibles ? "Ocultar" : "Items"}</span>
+                                          </button>
+
+                                          <button
+                                            onClick={() => handleDeleteVenta(v.id)}
+                                            className="p-1 text-slate-500 hover:text-rose-400 transition-all cursor-pointer"
+                                            title="Eliminar comanda"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      {itemsVisibles && (
+                                        <div className="space-y-1 my-1.5 bg-slate-900/60 p-2 rounded-lg border border-slate-800/80 animate-fadeIn">
+                                          <span className="text-[8px] font-black uppercase text-slate-400 block mb-1">Detalle del Consumo:</span>
+                                          {v.items_detalle?.map((item, idx) => (
+                                            <div key={idx} className="flex justify-between text-[10px] font-bold text-slate-300">
+                                              <span>{item.cantidad}x {item.nombre}</span>
+                                              <span className="font-mono text-slate-400">${(item.precio * item.cantidad).toLocaleString()}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      <div className="pt-1 border-t border-slate-900 flex justify-between items-center text-xs font-black">
+                                        <span
+                                          className={`uppercase text-[8px] px-2 py-0.5 rounded-full border ${
+                                            tieneFiado ? "bg-amber-500/20 text-amber-300 border-amber-500/50" : "bg-slate-900 text-pink-400 border-slate-800"
+                                          }`}
+                                        >
+                                          Pago: {v.metodo_pago}
+                                        </span>
+
+                                        <div className="flex items-center gap-2">
+                                          <span className="font-mono text-emerald-400 text-xs sm:text-sm">${v.total?.toLocaleString()}</span>
+
+                                          {tieneFiado && (
+                                            <button
+                                              onClick={() => setSelectedFiado(v)}
+                                              className="px-2.5 py-0.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black text-[9px] uppercase rounded-lg hover:scale-105 transition-all cursor-pointer shadow-md"
+                                            >
+                                              Saldar
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          {/* CONTROL STOCK CON EDICIÓN HABILITADA */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-black text-white flex items-center gap-2">
-              <Package className="w-5 h-5 text-cyan-400" /> Control de Stock
-            </h3>
-
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-3xl space-y-3 max-h-[600px] overflow-y-auto">
-              {productos.length === 0 ? (
-                <p className="text-xs text-slate-500 font-bold text-center py-6">Sin productos en base de datos</p>
-              ) : (
-                productos.map((p) => {
-                  const stockVal = p.stock ?? 0;
-                  const isLow = stockVal < 15;
-
-                  return (
-                    <div key={p.id} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex justify-between items-center">
-                      <div>
-                        <h5 className="font-black text-xs text-slate-100">{p.nombre}</h5>
-                        <span className="text-[9px] font-bold text-slate-400 uppercase">{p.categoria}</span>
-                      </div>
-
-                      <div className="flex items-center gap-2.5">
-                        <div className="text-right">
-                          <span className={`text-xs font-black font-mono block ${isLow ? "text-rose-400" : "text-emerald-400"}`}>
-                            {stockVal} Unidades
-                          </span>
-                          {isLow && <span className="text-[8px] font-black text-rose-500 uppercase flex items-center justify-end gap-1"><AlertTriangle className="w-2.5 h-2.5" /> Stock Bajo</span>}
-                        </div>
-
-                        {/* BOTÓN PARA MODIFICAR STOCK */}
-                        <button
-                          onClick={() => {
-                            setEditingStockProduct(p);
-                            setNewStockValue(stockVal.toString());
-                          }}
-                          className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-cyan-300 hover:text-cyan-200 rounded-xl transition-all cursor-pointer"
-                          title="Modificar Stock"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
+                      );
+                    })
+                  )}
+                </div>
               )}
             </div>
           </div>
+
+          {/* CONTROL STOCK (COMPRIMIBLE) CON OPCIÓN DE ELIMINAR Y MODIFICAR */}
+          <div className="space-y-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl transition-all">
+              <button
+                onClick={() => setShowStock(!showStock)}
+                className="w-full p-4 flex items-center justify-between text-left cursor-pointer hover:bg-slate-800/60 transition-all"
+              >
+                <h3 className="text-base font-black text-white flex items-center gap-2">
+                  <Package className="w-5 h-5 text-cyan-400" /> Control de Stock ({productos.length})
+                </h3>
+                <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-slate-400 text-xs font-black uppercase">
+                  {showStock ? <EyeOff className="w-4 h-4 text-cyan-400" /> : <Eye className="w-4 h-4 text-slate-400" />}
+                  <span>{showStock ? "Ocultar Stock" : "Desplegar Stock"}</span>
+                </div>
+              </button>
+
+              {showStock && (
+                <div className="p-4 border-t border-slate-800/80 space-y-2.5 max-h-[500px] overflow-y-auto animate-fadeIn">
+                  {productos.length === 0 ? (
+                    <p className="text-xs text-slate-500 font-bold text-center py-6">Sin productos en base de datos</p>
+                  ) : (
+                    productos.map((p) => {
+                      const stockVal = p.stock ?? 0;
+                      const isLow = stockVal < 15;
+
+                      return (
+                        <div key={p.id} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex justify-between items-center">
+                          <div>
+                            <h5 className="font-black text-xs text-slate-100">{p.nombre}</h5>
+                            <span className="text-[9px] font-bold text-slate-400 uppercase">{p.categoria}</span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <div className="text-right">
+                              <span className={`text-xs font-black font-mono block ${isLow ? "text-rose-400" : "text-emerald-400"}`}>
+                                {stockVal} Unds
+                              </span>
+                              {isLow && <span className="text-[8px] font-black text-rose-500 uppercase flex items-center justify-end gap-0.5"><AlertTriangle className="w-2.5 h-2.5" /> Bajo</span>}
+                            </div>
+
+                            {/* BOTÓN PARA MODIFICAR STOCK */}
+                            <button
+                              onClick={() => {
+                                setEditingStockProduct(p);
+                                setNewStockValue(stockVal.toString());
+                              }}
+                              className="p-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-cyan-300 hover:text-cyan-200 rounded-lg transition-all cursor-pointer"
+                              title="Modificar Stock"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* BOTÓN ELIMINAR PRODUCTO DE BASE DE DATOS */}
+                            <button
+                              onClick={() => handleDeleteProducto(p.id, p.nombre)}
+                              className="p-1.5 bg-rose-500/10 hover:bg-rose-500 border border-rose-500/30 text-rose-400 hover:text-white rounded-lg transition-all cursor-pointer"
+                              title="Eliminar producto"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -1032,7 +1225,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* MODAL CERRAR SEMANA (CON MENSAJE DE CONFIRMACIÓN) */}
+      {/* MODAL CERRAR SEMANA */}
       {showCerrarSemanaModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl relative space-y-4">
@@ -1078,7 +1271,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* MODAL HISTORIAL SEMANAL */}
+      {/* MODAL HISTORIAL SEMANAL CON OPCIÓN DE ELIMINAR */}
       {showHistorialSemanalModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-3xl w-full shadow-2xl relative space-y-4 max-h-[85vh] flex flex-col">
@@ -1098,8 +1291,8 @@ export default function AdminDashboard() {
             ) : (
               <div className="flex-1 overflow-y-auto space-y-3 pr-1">
                 {cierresSemanales.map((semana) => (
-                  <div key={semana.id} className="bg-slate-950 p-4 rounded-2xl border border-purple-500/30 space-y-3">
-                    <div className="flex justify-between items-center pb-2 border-b border-slate-900">
+                  <div key={semana.id} className="bg-slate-950 p-4 rounded-2xl border border-purple-500/30 space-y-3 relative">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-900 pr-8">
                       <div>
                         <span className="font-black text-xs text-purple-300 block uppercase">
                           Semana: {semana.fecha_inicio} al {semana.fecha_fin}
@@ -1112,6 +1305,14 @@ export default function AdminDashboard() {
                         Caja Neta: ${semana.caja_neta.toLocaleString()}
                       </span>
                     </div>
+
+                    <button
+                      onClick={() => handleDeleteSemanaArchivada(semana.id, semana.fecha_inicio, semana.fecha_fin)}
+                      className="absolute top-3.5 right-3 p-1 rounded-lg bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white transition-all cursor-pointer"
+                      title="Eliminar registro de esta semana"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
 
                     <div className="grid grid-cols-3 gap-2 text-center text-xs font-bold">
                       <div className="p-2 bg-slate-900 rounded-xl border border-slate-800">
@@ -1186,7 +1387,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* MODAL VER TODOS LOS GASTOS DE LA BASE DE DATOS */}
+      {/* MODAL VER TODOS LOS GASTOS DE LA BASE DE DATOS CON BORRADO */}
       {showAllGastosModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-2xl w-full shadow-2xl relative space-y-4 max-h-[85vh] flex flex-col">
@@ -1239,9 +1440,18 @@ export default function AdminDashboard() {
                         </div>
                       </div>
 
-                      <span className="font-mono text-rose-400 font-black text-base">
-                        -${gasto.monto.toLocaleString()}
-                      </span>
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-rose-400 font-black text-base">
+                          -${gasto.monto.toLocaleString()}
+                        </span>
+                        <button
+                          onClick={() => handleDeleteGasto(gasto.id)}
+                          className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white transition-all cursor-pointer"
+                          title="Eliminar gasto"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
@@ -1308,7 +1518,14 @@ export default function AdminDashboard() {
                         ))}
                       </div>
 
-                      <div className="pt-2 flex justify-end">
+                      <div className="pt-2 flex justify-between items-center">
+                        <button
+                          onClick={() => handleDeleteVenta(fiado.id)}
+                          className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white transition-all cursor-pointer flex items-center gap-1 text-[10px] font-black uppercase"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" /> Borrar Cuenta
+                        </button>
+
                         <button
                           onClick={() => {
                             setSelectedFiado(fiado);
@@ -1380,7 +1597,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* MODAL REGISTRAR GASTO EN SUPABASE (gastos) */}
+      {/* MODAL REGISTRAR GASTO EN SUPABASE */}
       {showGastoModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl relative space-y-4">
@@ -1426,6 +1643,42 @@ export default function AdminDashboard() {
           </div>
         </div>
       )}
+
+      {/* MODAL DE CONFIRMACIÓN PERSONALIZADO (ADVERTENCIA DE ELIMINACIÓN) */}
+      {confirmModalData.isOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4 text-center">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/20 text-rose-400 border border-rose-500/40 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <div>
+              <h3 className="font-black text-base text-white uppercase tracking-wider">
+                {confirmModalData.title}
+              </h3>
+              <p className="text-xs text-slate-300 font-bold mt-2 leading-relaxed">
+                {confirmModalData.message}
+              </p>
+            </div>
+
+            <div className="flex gap-2.5 pt-2">
+              <button
+                onClick={() => setConfirmModalData((prev) => ({ ...prev, isOpen: false }))}
+                className="flex-1 py-2.5 bg-slate-950 hover:bg-slate-800 text-slate-300 font-black text-xs uppercase rounded-xl border border-slate-800 transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmModalData.onConfirm}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase rounded-xl shadow-lg transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
