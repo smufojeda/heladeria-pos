@@ -623,8 +623,30 @@ export default function HomePOS() {
       return;
     }
 
+    // 1. Filtrar los items a descontar del inventario
+    const itemsADescuentar = cart.filter((item) => {
+      if (initialItemsCount > 0) {
+        return item.es_adicion;
+      }
+      return true;
+    });
+
+    // 2. Descontar stock inmediatamente al enviar a cocina
+    for (const item of itemsADescuentar) {
+      if (item.producto.id) {
+        const stockActual = item.producto.stock ?? 50;
+        const nuevoStock = Math.max(0, stockActual - item.cantidad);
+        await supabase
+          .from("productos")
+          .update({ stock: nuevoStock, disponible: nuevoStock > 0 })
+          .eq("id", item.producto.id);
+      }
+    }
+
+    // 3. Cambiar estado de la mesa
     await supabase.from("mesas").update({ estado: "pendiente_servir" }).eq("id", selectedMesa.id);
 
+    // 4. Crear o actualizar el pedido
     let { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", selectedMesa.id).eq("estado", "abierto").single();
 
     if (!pedido) {
@@ -682,17 +704,6 @@ export default function HomePOS() {
 
     const itemsSummary = cart.map((i) => ({ nombre: i.producto.nombre, cantidad: i.cantidad, precio: i.producto.precio }));
     const fiadoItem = pagos.find((p) => p.metodo === "fiado");
-
-    for (const item of cart) {
-      if (item.producto.id) {
-        const stockActual = item.producto.stock ?? 50;
-        const nuevoStock = Math.max(0, stockActual - item.cantidad);
-        await supabase
-          .from("productos")
-          .update({ stock: nuevoStock, disponible: nuevoStock > 0 })
-          .eq("id", item.producto.id);
-      }
-    }
 
     await supabase.from("ventas").insert({
       cierre_diario_id: cierreActivo.id,
