@@ -236,17 +236,28 @@ export default function AdminDashboard() {
   // --- FUNCIONES MANUALLY DE ELIMINACIÓN INDIVIDUAL ---
 
   // 1. Eliminar Cierre Diario
-  const handleDeleteCierreDiario = (id: number, fecha: string) => {
+const handleDeleteCierreDiario = (id: number, fecha: string) => {
     requestConfirmation(
       "Eliminar Cierre Diario",
       `¿Estás seguro de eliminar el registro de Cierre Diario del día ${fecha}? Esta acción eliminará el historial de caja de esta fecha.`,
       async () => {
-        await supabase.from("cierres_diarios").delete().eq("id", id);
-        loadData();
+        // Esperamos la respuesta de Supabase
+        const { error } = await supabase.from("cierres_diarios").delete().eq("id", id);
+
+        if (error) {
+          console.error("Error al borrar en Supabase:", error);
+          alert(`No se pudo borrar: ${error.message}`);
+          return;
+        }
+
+        // Actualización optimista instantánea en UI
+        setCierresDiarios((prev) => prev.filter((item) => item.id !== id));
+        
+        // Recargar datos actualizados
+        await loadData();
       }
     );
   };
-
   // 2. Eliminar Venta/Comanda individual
   const handleDeleteVenta = (id: number) => {
     requestConfirmation(
