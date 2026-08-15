@@ -36,7 +36,9 @@ import {
   Edit2,
   PlusCircle,
   AlertTriangle,
-  FileText
+  FileText,
+  Pencil,
+  RotateCcw
 } from "lucide-react";
 
 type EstadoMesa = "libre" | "pendiente_servir" | "preparado" | "servido" | "pendiente_pago";
@@ -100,7 +102,7 @@ interface CierreDiario {
   estado: "abierto" | "cerrado";
 }
 
-// Formateador universal con separadores de miles es-CO (ej: 1.000, 100.000, 1.000.000)
+// Formateador universal con separadores de miles es-CO
 const formatCurrency = (amount: number | string | undefined | null) => {
   if (amount === undefined || amount === null || amount === "") return "0";
   const numericValue = typeof amount === "string" ? Number(amount.replace(/\D/g, "")) : amount;
@@ -108,11 +110,19 @@ const formatCurrency = (amount: number | string | undefined | null) => {
   return numericValue.toLocaleString("es-CO");
 };
 
-// Convierte string formateado con puntos a número limpio
+// Convierte string formateado a número
 const parseCurrencyToNumber = (formattedStr: string): number => {
   if (!formattedStr) return 0;
   const cleanStr = formattedStr.replace(/\D/g, "");
   return Number(cleanStr) || 0;
+};
+
+// Genera el nombre por defecto de la mesa según su índice
+const getNombreOriginal = (numero: number, idx: number) => {
+  if (idx < 5) return `Mesa ${idx + 1}`;
+  if (idx === 5) return "Barra 1";
+  if (idx === 6) return "Barra 2";
+  return `Espacio ${numero}`;
 };
 
 export default function HomePOS() {
@@ -150,6 +160,7 @@ export default function HomePOS() {
 
   const [cierreActivo, setCierreActivo] = useState<CierreDiario | null>(null);
   const [showAperturaModal, setShowAperturaModal] = useState(false);
+  const [showAperturaRequeridaModal, setShowAperturaRequeridaModal] = useState(false);
   const [fechaApertura, setFechaApertura] = useState(new Date().toISOString().split("T")[0]);
   const [editFecha, setEditFecha] = useState(false);
   const [montoInicialFormatted, setMontoInicialFormatted] = useState("");
@@ -166,6 +177,15 @@ export default function HomePOS() {
   const [razonDiferencia, setRazonDiferencia] = useState("");
   const [resumenCierre, setResumenCierre] = useState<any>(null);
 
+  // ESTADOS PARA RENOMBRAR / RESERVAR MESA
+  const [mesaAEditar, setMesaAEditar] = useState<{ id: number; nombre: string; original: string } | null>(null);
+  const [nuevoNombreMesa, setNuevoNombreMesa] = useState("");
+
+  // ESTADO PARA CREAR MESAS DINÁMICAS
+  const [showCrearMesaModal, setShowCrearMesaModal] = useState(false);
+  const [tipoNuevoEspacio, setTipoNuevoEspacio] = useState<"mesa" | "barra">("mesa");
+  const [nombreNuevoEspacio, setNombreNuevoEspacio] = useState("");
+
   const categories = useMemo(() => {
     const cats = new Set(productos.map((p) => p.categoria).filter(Boolean));
     return ["Todos", ...Array.from(cats)];
@@ -177,7 +197,6 @@ export default function HomePOS() {
       const { data: mesasData } = await supabase.from("mesas").select("*").order("numero", { ascending: true });
       const { data: prodData } = await supabase.from("productos").select("*").order("id", { ascending: true });
       
-      // Obtener el estado del día abierto
       const { data: diaData } = await supabase.from("cierres_diarios").select("*").eq("estado", "abierto").order("id", { ascending: false }).limit(1);
       if (diaData && diaData.length > 0) {
         setCierreActivo(diaData[0] as CierreDiario);
@@ -186,14 +205,7 @@ export default function HomePOS() {
       }
 
       if (mesasData && mesasData.length > 0) {
-        const formattedMesas = mesasData.map((m, idx) => {
-          let customName = m.nombre;
-          if (idx < 5) customName = `Mesa ${idx + 1}`;
-          else if (idx === 5) customName = "Barra 1";
-          else if (idx === 6) customName = "Barra 2";
-          return { ...m, nombre: customName };
-        });
-        setMesas(formattedMesas as Mesa[]);
+        setMesas(mesasData as Mesa[]);
       }
       if (prodData && prodData.length > 0) setProductos(prodData);
       fetchPedidosCocina();
@@ -226,6 +238,63 @@ export default function HomePOS() {
     };
   }, []);
 
+  // CREAR Y ELIMINAR MESAS ADICIONALES
+  const handleCrearMesa = async () => {
+    const maxNumero = mesas.reduce((max, m) => (m.numero > max ? m.numero : max), 0);
+    const nuevoNumero = maxNumero + 1;
+    
+    let nombreFinal = nombreNuevoEspacio.trim();
+    if (!nombreFinal) {
+      nombreFinal = tipoNuevoEspacio === "barra" ? `Barra ${nuevoNumero}` : `Mesa ${nuevoNumero}`;
+    }
+
+    const { error } = await supabase.from("mesas").insert({
+      numero: nuevoNumero,
+      nombre: nombreFinal,
+      estado: "libre",
+      capacidad: 4
+    });
+
+    if (!error) {
+      setShowCrearMesaModal(false);
+      setNombreNuevoEspacio("");
+      fetchData();
+    } else {
+      alert("Error al crear el nuevo espacio: " + error.message);
+    }
+  };
+
+  const handleEliminarMesaAdicional = async (mesaId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm("¿Estás seguro de eliminar este espacio adicional?")) {
+      await supabase.from("mesas").delete().eq("id", mesaId);
+      fetchData();
+    }
+  };
+
+  // FUNCIONES PARA CAMBIAR NOMBRE DE MESA / RESTABLECER
+  const handleOpenEditNombre = (mesa: Mesa, idx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nombreOrig = getNombreOriginal(mesa.numero, idx);
+    setMesaAEditar({ id: mesa.id, nombre: mesa.nombre, original: nombreOrig });
+    setNuevoNombreMesa(mesa.nombre);
+  };
+
+  const handleGuardarNombreMesa = async () => {
+    if (!mesaAEditar || !nuevoNombreMesa.trim()) return;
+    await supabase.from("mesas").update({ nombre: nuevoNombreMesa.trim() }).eq("id", mesaAEditar.id);
+    setMesaAEditar(null);
+    setNuevoNombreMesa("");
+    fetchData();
+  };
+
+  const handleRestablecerNombreMesa = async (mesa: Mesa, idx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nombreOrig = getNombreOriginal(mesa.numero, idx);
+    await supabase.from("mesas").update({ nombre: nombreOrig }).eq("id", mesa.id);
+    fetchData();
+  };
+
   const handleAdminAccess = () => {
     setShowAdminPinModal(true);
   };
@@ -241,7 +310,6 @@ export default function HomePOS() {
     }
   };
 
-  // APERTURA DE DÍA CORREGIDA (Evita errores de restricción NOT NULL en Supabase)
   const handleAbrirDia = async () => {
     const monto = parseCurrencyToNumber(montoInicialFormatted);
 
@@ -269,12 +337,13 @@ export default function HomePOS() {
     if (!error && data) {
       setCierreActivo(data as CierreDiario);
       setShowAperturaModal(false);
+      setShowAperturaRequeridaModal(false);
       setShowFloatingMenu(false);
       setMontoInicialFormatted("");
       alert("✅ ¡Día abierto exitosamente!");
     } else {
       console.error("Error al abrir día:", error);
-      alert("Error al abrir el día: " + (error?.message || "Verifica los permisos o la estructura de la base de datos."));
+      alert("Error al abrir el día: " + (error?.message || "Verifica permisos de Supabase."));
     }
   };
 
@@ -503,6 +572,11 @@ export default function HomePOS() {
   const handleSaveOrder = async () => {
     if (!selectedMesa || vista === "caja") return;
 
+    if (!cierreActivo) {
+      setShowAperturaRequeridaModal(true);
+      return;
+    }
+
     await supabase.from("mesas").update({ estado: "pendiente_servir" }).eq("id", selectedMesa.id);
 
     let { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", selectedMesa.id).eq("estado", "abierto").single();
@@ -574,8 +648,12 @@ export default function HomePOS() {
       items_detalle: itemsSummary,
     });
 
+    // Al finalizar la venta, restablecemos el nombre de la mesa al original
+    const idxMesa = mesas.findIndex((m) => m.id === selectedMesa.id);
+    const nombreOriginal = idxMesa !== -1 ? getNombreOriginal(selectedMesa.numero, idxMesa) : selectedMesa.nombre;
+
     await supabase.from("pedidos").update({ estado: "pagado", estado_pedido: "servido" }).eq("mesa_id", selectedMesa.id).eq("estado", "abierto");
-    await supabase.from("mesas").update({ estado: "libre" }).eq("id", selectedMesa.id);
+    await supabase.from("mesas").update({ estado: "libre", nombre: nombreOriginal }).eq("id", selectedMesa.id);
 
     setSaleCompleted(true);
     fetchData();
@@ -589,6 +667,10 @@ export default function HomePOS() {
 
   const cartIniciales = useMemo(() => cart.filter((i) => !i.es_adicion), [cart]);
   const cartAdiciones = useMemo(() => cart.filter((i) => i.es_adicion), [cart]);
+
+  // Se separan las mesas principales (primeras 7) de las adicionales creadas dinámicamente
+  const mesasPrincipales = useMemo(() => mesas.slice(0, 7), [mesas]);
+  const mesasAdicionales = useMemo(() => mesas.slice(7), [mesas]);
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans antialiased flex flex-col selection:bg-pink-500 selection:text-white relative">
@@ -748,7 +830,157 @@ export default function HomePOS() {
           {!selectedMesa ? (
             <main className="flex-1 overflow-y-auto p-4 sm:p-8 max-w-7xl mx-auto w-full">
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 sm:gap-6">
-                {mesas.map((mesa) => {
+                {/* RENDERING MESAS PRINCIPALES (1 A 7) */}
+                {mesasPrincipales.map((mesa, idx) => {
+                  const isLibre = mesa.estado === "libre";
+                  const isPendServir = mesa.estado === "pendiente_servir";
+                  const isPreparado = mesa.estado === "preparado";
+                  const isServido = mesa.estado === "servido";
+
+                  const nombreOriginal = getNombreOriginal(mesa.numero, idx);
+                  const tieneNombrePersonalizado = mesa.nombre !== nombreOriginal;
+
+                  return (
+                    <div
+                      key={mesa.id}
+                      onClick={() => handleSelectMesa(mesa)}
+                      className={`group relative rounded-3xl p-5 border-2 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between h-64 sm:h-72 shadow-2xl ${
+                        isLibre
+                          ? "bg-slate-900/90 border-emerald-500/50 hover:border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)] hover:shadow-[0_0_25px_rgba(16,185,129,0.3)]"
+                          : isPendServir
+                          ? "bg-amber-950/40 border-amber-500 shadow-[0_0_20px_rgba(245,158,11,0.25)] hover:shadow-[0_0_30px_rgba(245,158,11,0.4)]"
+                          : isPreparado
+                          ? "bg-purple-950/50 border-purple-500 shadow-[0_0_30px_rgba(168,85,247,0.5)] animate-pulse hover:shadow-[0_0_40px_rgba(168,85,247,0.7)]"
+                          : "bg-cyan-950/40 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.25)] hover:shadow-[0_0_30px_rgba(6,182,212,0.4)]"
+                      }`}
+                    >
+                      {/* HEADER TARJETA MESA CON BOTÓN LÁPIZ Y RESTABLECER */}
+                      <div className="flex justify-between items-start gap-1 z-10">
+                        <div className="flex items-center gap-1.5 flex-wrap max-w-[65%]">
+                          <h3 className="font-black text-lg sm:text-xl text-white tracking-wide truncate">
+                            {mesa.nombre}
+                          </h3>
+                          <button
+                            onClick={(e) => handleOpenEditNombre(mesa, idx, e)}
+                            className="p-1 rounded-lg bg-slate-800/80 hover:bg-pink-500 text-slate-300 hover:text-white transition-all cursor-pointer shrink-0"
+                            title="Cambiar/Reservar Nombre"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          {tieneNombrePersonalizado && (
+                            <button
+                              onClick={(e) => handleRestablecerNombreMesa(mesa, idx, e)}
+                              className="p-1 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white transition-all cursor-pointer shrink-0"
+                              title={`Restablecer a: ${nombreOriginal}`}
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+
+                        <span className={`text-[9px] sm:text-[10px] font-black px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full uppercase flex items-center gap-1 tracking-wider shadow-md shrink-0 ${
+                          isLibre
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                            : isPendServir
+                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                            : isPreparado
+                            ? "bg-purple-500/30 text-purple-200 border border-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.5)]"
+                            : "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                        }`}>
+                          {isLibre && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
+                          {isPendServir && <Clock className="w-3 h-3 text-amber-400" />}
+                          {isPreparado && <Sparkle className="w-3 h-3 text-purple-300 animate-spin" />}
+                          {isServido && <ChefHat className="w-3 h-3 text-cyan-400" />}
+                          {mesa.estado.replace("_", " ")}
+                        </span>
+                      </div>
+
+                      <div className="flex-1 flex flex-col justify-center items-center my-1 relative z-0">
+                        <img 
+                          src={isLibre ? "/mesa1.png" : "/mesa2.png"} 
+                          alt={mesa.nombre} 
+                          className="h-20 sm:h-22 w-auto object-contain opacity-85 group-hover:scale-105 transition-transform duration-300" 
+                        />
+                        <span className={`text-xl sm:text-2xl font-black uppercase tracking-widest mt-1 drop-shadow-[0_2px_10px_rgba(0,0,0,0.8)] ${
+                          isLibre 
+                            ? "text-emerald-400" 
+                            : isPendServir 
+                            ? "text-amber-400" 
+                            : isPreparado 
+                            ? "text-purple-300 animate-bounce" 
+                            : "text-cyan-300"
+                        }`}>
+                          {isLibre ? "LIBRE" : isPendServir ? "COCINA" : isPreparado ? "PREPARADO" : "SERVIDO"}
+                        </span>
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-800/80 z-10">
+                        {vista === "caja" ? (
+                          <button
+                            className={`w-full py-2 font-black text-xs uppercase rounded-xl border flex items-center justify-center gap-1.5 transition-all ${
+                              isLibre
+                                ? "bg-slate-950 text-slate-600 border-slate-800/80 cursor-not-allowed"
+                                : "bg-pink-500/20 text-pink-300 border-pink-500/50 hover:bg-pink-500 hover:text-white shadow-[0_0_15px_rgba(236,72,153,0.3)] active:scale-95 cursor-pointer"
+                            }`}
+                          >
+                            <CreditCard className="w-3.5 h-3.5" />
+                            {isLibre ? "Disponible" : "Cobrar Mesa"}
+                          </button>
+                        ) : (
+                          <div>
+                            {isPreparado ? (
+                              <button
+                                onClick={(e) => handleEntregarAMesa(mesa.id, e)}
+                                className="w-full py-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs uppercase rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.5)] flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                              >
+                                <Send className="w-3.5 h-3.5" /> Entregar
+                              </button>
+                            ) : (
+                              <div className={`text-[11px] font-black uppercase text-center py-1.5 rounded-xl border flex items-center justify-center gap-1.5 transition-all ${
+                                isLibre 
+                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 group-hover:bg-emerald-500 group-hover:text-slate-950" 
+                                  : isServido 
+                                  ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30 group-hover:bg-cyan-500 group-hover:text-slate-950"
+                                  : "bg-amber-500/10 text-amber-300 border-amber-500/30 group-hover:bg-amber-500 group-hover:text-slate-950"
+                              }`}>
+                                {isLibre ? (
+                                  <><Plus className="w-3.5 h-3.5" /> Tomar Pedido</>
+                                ) : isServido ? (
+                                  <><Plus className="w-3.5 h-3.5" /> Agregar Adición</>
+                                ) : (
+                                  <><Receipt className="w-3.5 h-3.5" /> Ver / Modificar</>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* BOTÓN / TARJETA PARA CREAR NUEVAS MESAS O BARRAS ADICIONALES (POSICIÓN 8 REEMPLAZANDO A LA MESA 8) */}
+                <div
+                  onClick={() => setShowCrearMesaModal(true)}
+                  className="group relative rounded-3xl p-5 border-2 border-dashed border-pink-500/60 bg-gradient-to-br from-slate-900/90 via-purple-950/20 to-pink-950/30 hover:border-pink-400 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col items-center justify-center h-64 sm:h-72 shadow-2xl hover:shadow-[0_0_30px_rgba(236,72,153,0.35)] active:scale-95 text-center"
+                >
+                  <div className="w-16 h-16 rounded-full bg-pink-500/20 border border-pink-500/50 flex items-center justify-center text-pink-400 group-hover:scale-110 group-hover:bg-pink-500 group-hover:text-white transition-all shadow-[0_0_15px_rgba(236,72,153,0.4)] mb-3">
+                    <PlusCircle className="w-8 h-8" />
+                  </div>
+                  <h3 className="font-black text-base sm:text-lg text-white uppercase tracking-wider">
+                    Crear Espacio
+                  </h3>
+                  <p className="text-[11px] font-bold text-pink-300/80 mt-1 max-w-[160px]">
+                    Mesa o Barra Adicional
+                  </p>
+                  <span className="mt-4 px-3 py-1 bg-pink-500/20 border border-pink-500/40 text-pink-300 text-[10px] font-black uppercase rounded-full">
+                    + Añadir evento
+                  </span>
+                </div>
+
+                {/* RENDERING DE LAS MESAS O BARRAS DINÁMICAS ADICIONALES CREADAS */}
+                {mesasAdicionales.map((mesa, idx) => {
+                  const actualIdx = idx + 7;
                   const isLibre = mesa.estado === "libre";
                   const isPendServir = mesa.estado === "pendiente_servir";
                   const isPreparado = mesa.estado === "preparado";
@@ -768,9 +1000,30 @@ export default function HomePOS() {
                           : "bg-cyan-950/40 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.25)] hover:shadow-[0_0_30px_rgba(6,182,212,0.4)]"
                       }`}
                     >
-                      <div className="flex justify-between items-center z-10">
-                        <h3 className="font-black text-xl text-white tracking-wide">{mesa.nombre}</h3>
-                        <span className={`text-[10px] font-black px-2.5 py-1 rounded-full uppercase flex items-center gap-1 tracking-wider shadow-md ${
+                      <div className="flex justify-between items-start gap-1 z-10">
+                        <div className="flex items-center gap-1.5 flex-wrap max-w-[65%]">
+                          <h3 className="font-black text-lg sm:text-xl text-white tracking-wide truncate">
+                            {mesa.nombre}
+                          </h3>
+                          <button
+                            onClick={(e) => handleOpenEditNombre(mesa, actualIdx, e)}
+                            className="p-1 rounded-lg bg-slate-800/80 hover:bg-pink-500 text-slate-300 hover:text-white transition-all cursor-pointer shrink-0"
+                            title="Cambiar Nombre"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          {isLibre && (
+                            <button
+                              onClick={(e) => handleEliminarMesaAdicional(mesa.id, e)}
+                              className="p-1 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white transition-all cursor-pointer shrink-0"
+                              title="Eliminar Espacio Adicional"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+
+                        <span className={`text-[9px] sm:text-[10px] font-black px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full uppercase flex items-center gap-1 tracking-wider shadow-md shrink-0 ${
                           isLibre
                             ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
                             : isPendServir
@@ -1069,6 +1322,147 @@ export default function HomePOS() {
         </button>
       </div>
 
+      {/* MODAL CREAR MESA O BARRA ADICIONAL */}
+      {showCrearMesaModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-pink-500/40 rounded-3xl p-6 max-w-xs w-full shadow-2xl relative space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-sm text-white flex items-center gap-2">
+                <PlusCircle className="w-4 h-4 text-pink-400" /> Crear Nuevo Espacio
+              </h3>
+              <button onClick={() => setShowCrearMesaModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-bold text-slate-400 block mb-1.5">Tipo de Espacio:</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => setTipoNuevoEspacio("mesa")}
+                    className={`py-2 rounded-xl text-xs font-black uppercase transition-all border cursor-pointer ${
+                      tipoNuevoEspacio === "mesa" ? "bg-pink-500 text-white border-pink-400" : "bg-slate-950 text-slate-400 border-slate-800"
+                    }`}
+                  >
+                    Mesa
+                  </button>
+                  <button
+                    onClick={() => setTipoNuevoEspacio("barra")}
+                    className={`py-2 rounded-xl text-xs font-black uppercase transition-all border cursor-pointer ${
+                      tipoNuevoEspacio === "barra" ? "bg-pink-500 text-white border-pink-400" : "bg-slate-950 text-slate-400 border-slate-800"
+                    }`}
+                  >
+                    Barra
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-400 block mb-1">Nombre Personalizado (Opcional):</label>
+                <input
+                  type="text"
+                  placeholder={tipoNuevoEspacio === "barra" ? "Ej: Barra Auxiliar..." : "Ej: Mesa Evento 1..."}
+                  value={nombreNuevoEspacio}
+                  onChange={(e) => setNombreNuevoEspacio(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-pink-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowCrearMesaModal(false)}
+                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-xs uppercase rounded-xl transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleCrearMesa}
+                className="flex-1 py-2.5 bg-pink-500 hover:bg-pink-400 text-white font-black text-xs uppercase rounded-xl shadow-lg transition-all cursor-pointer active:scale-95"
+              >
+                Crear
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL RENOMBRAR / RESERVAR MESA */}
+      {mesaAEditar && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-pink-500/40 rounded-3xl p-6 max-w-xs w-full shadow-2xl relative space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="font-black text-sm text-white flex items-center gap-2">
+                <Pencil className="w-4 h-4 text-pink-400" /> Renombrar Espacio
+              </h3>
+              <button onClick={() => setMesaAEditar(null)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-400 block mb-1">Nombre o Reserva de la Mesa:</label>
+              <input
+                type="text"
+                placeholder="Ej: Mesa de Juan, Reserva 4pm..."
+                value={nuevoNombreMesa}
+                onChange={(e) => setNuevoNombreMesa(e.target.value)}
+                className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm font-bold text-white focus:outline-none focus:border-pink-500"
+              />
+              <span className="text-[10px] text-slate-500 font-bold block mt-1">Nombre por defecto: {mesaAEditar.original}</span>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setMesaAEditar(null)}
+                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-xs uppercase rounded-xl transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleGuardarNombreMesa}
+                className="flex-1 py-2.5 bg-pink-500 hover:bg-pink-400 text-white font-black text-xs uppercase rounded-xl shadow-lg transition-all cursor-pointer active:scale-95"
+              >
+                Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL ADVERTENCIA DE APERTURA REQUERIDA */}
+      {showAperturaRequeridaModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-amber-500/50 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative text-center space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/40 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            
+            <div>
+              <h3 className="font-black text-lg text-white uppercase tracking-wider">Apertura de Día Requerida</h3>
+              <p className="text-xs text-slate-300 font-bold mt-1">
+                No has realizado la apertura del día. Debes definir el saldo inicial de caja para poder registrar comandas.
+              </p>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2 pt-2">
+              <button
+                onClick={() => setShowAperturaRequeridaModal(false)}
+                className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-xs uppercase rounded-xl transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  setShowAperturaRequeridaModal(false);
+                  setShowAperturaModal(true);
+                }}
+                className="flex-1 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs uppercase rounded-xl shadow-lg transition-all cursor-pointer active:scale-95"
+              >
+                Hacer Apertura
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL CLAVE ADMIN */}
       {showAdminPinModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
@@ -1100,7 +1494,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL APERTURA DE DÍA (CON FORMATEO MÁSCARA EN TIEMPO REAL) */}
+      {/* MODAL APERTURA DE DÍA */}
       {showAperturaModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
@@ -1546,7 +1940,7 @@ export default function HomePOS() {
               <div className="text-center py-6 space-y-4">
                 <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto animate-bounce" />
                 <h3 className="font-black text-xl text-white">¡Venta Registrada Exitosamente!</h3>
-                <p className="text-xs text-slate-400">La mesa ha sido liberada correctamente en el sistema.</p>
+                <p className="text-xs text-slate-400">La mesa ha sido liberada y restablecida correctamente.</p>
                 <button onClick={() => { setShowCheckout(false); setSelectedMesa(null); }} className="w-full py-3 bg-pink-500 text-white font-black uppercase text-xs rounded-2xl cursor-pointer">
                   Volver al Mapa
                 </button>
