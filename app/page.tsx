@@ -555,57 +555,61 @@ export default function HomePOS() {
     alert("🎉 ¡Cierre de día guardado con éxito!");
   };
 
-  const handleSelectMesa = async (mesa: Mesa) => {
-    if (vista === "caja" && mesa.estado === "libre") return;
+ const handleSelectMesa = async (mesa: Mesa) => {
+  if (vista === "caja" && mesa.estado === "libre") return;
 
-    setSelectedMesa(mesa);
-    setCart([]);
-    setInitialItemsCount(0);
-    setShowCheckout(false);
-    setSaleCompleted(false);
-    setShowMobileCart(false);
-    setPagos([]);
-    setMontoIngresado("");
-    setEfectivoRecibido("");
-    setClienteFiado("");
+  setSelectedMesa(mesa);
+  setCart([]);
+  setInitialItemsCount(0);
+  setShowCheckout(false);
+  setSaleCompleted(false);
+  setShowMobileCart(false);
+  setPagos([]);
+  setMontoIngresado("");
+  setEfectivoRecibido("");
+  setClienteFiado("");
 
-    const { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", mesa.id).eq("estado", "abierto").single();
+  const { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", mesa.id).eq("estado", "abierto").single();
 
-    if (pedido) {
-      const { data: items } = await supabase.from("pedido_items").select("*, productos(*)").eq("pedido_id", pedido.id);
-      if (items) {
-        const loadedCart: CartItem[] = items.map((it: any) => ({
-          producto: it.productos,
-          cantidad: it.cantidad,
-          notas: it.notas || "",
-          es_adicion: it.es_adicion || false,
-        }));
-        setCart(loadedCart);
-        setInitialItemsCount(loadedCart.reduce((acc, i) => acc + i.cantidad, 0));
-      }
+  if (pedido) {
+    const { data: items } = await supabase.from("pedido_items").select("*, productos(*)").eq("pedido_id", pedido.id);
+    if (items && items.length > 0) {
+      const loadedCart: CartItem[] = items.map((it: any) => ({
+        producto: it.productos,
+        cantidad: it.cantidad,
+        notas: it.notas || "",
+        es_adicion: it.es_adicion || false,
+      }));
+      setCart(loadedCart);
+      // Guardamos la cantidad exacta de ítems que ya estaban registrados en cocina previamente
+      const totalExistentes = loadedCart.reduce((acc, i) => acc + i.cantidad, 0);
+      setInitialItemsCount(totalExistentes);
     }
+  }
 
-    if (vista === "caja" && mesa.estado !== "libre") {
-      setShowCheckout(true);
-    }
-  };
+  if (vista === "caja" && mesa.estado !== "libre") {
+    setShowCheckout(true);
+  }
+};
 
-  const addToCart = (producto: Producto) => {
-    if (vista === "caja") return;
+ const addToCart = (producto: Producto) => {
+  if (vista === "caja") return;
+  
+  setAddedToast(`+1 ${producto.nombre}`);
+  setTimeout(() => setAddedToast(null), 1400);
+
+  setCart((prev) => {
+    // Si ya hay un pedido cargado en la mesa, todo lo nuevo que se agregue ahora TIENE que ser adición (es_adicion: true)
+    // Si la mesa estaba libre (initialItemsCount === 0), es un pedido nuevo normal (es_adicion: false)
+    const esAdicion = initialItemsCount > 0;
     
-    setAddedToast(`+1 ${producto.nombre}`);
-    setTimeout(() => setAddedToast(null), 1400);
-
-    setCart((prev) => {
-      const isAdicion = initialItemsCount > 0;
-      const existing = prev.find((item) => item.producto.id === producto.id && item.es_adicion === isAdicion);
-      if (existing) {
-        return prev.map((item) => item.producto.id === producto.id && item.es_adicion === isAdicion ? { ...item, cantidad: item.cantidad + 1 } : item);
-      }
-      return [...prev, { producto, cantidad: 1, es_adicion: isAdicion }];
-    });
-  };
-
+    const existing = prev.find((item) => item.producto.id === producto.id && item.es_adicion === esAdicion);
+    if (existing) {
+      return prev.map((item) => item.producto.id === producto.id && item.es_adicion === esAdicion ? { ...item, cantidad: item.cantidad + 1 } : item);
+    }
+    return [...prev, { producto, cantidad: 1, es_adicion: esAdicion }];
+  });
+};
   const updateQuantity = (productoId: number, delta: number, esAdicion: boolean = false) => {
     if (vista === "caja") return;
     setCart((prev) =>
@@ -676,61 +680,63 @@ export default function HomePOS() {
     setPagos((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleSaveOrder = async () => {
-    if (!selectedMesa || vista === "caja") return;
+ const handleSaveOrder = async () => {
+  if (!selectedMesa || vista === "caja") return;
 
-    if (!cierreActivo) {
-      setShowAperturaRequeridaModal(true);
-      return;
+  if (!cierreActivo) {
+    setShowAperturaRequeridaModal(true);
+    return;
+  }
+
+  // Descontar stock solo de los nuevos ítems agregados
+  const itemsNuevos = cart.filter(item => item.es_adicion);
+
+  for (const item of itemsNuevos) {
+    if (item.producto.id) {
+      const stockActual = item.producto.stock ?? 50;
+      const nuevoStock = Math.max(0, stockActual - item.cantidad);
+      await supabase
+        .from("productos")
+        .update({ stock: nuevoStock, disponible: nuevoStock > 0 })
+        .eq("id", item.producto.id);
     }
+  }
 
-    const itemsADescuentar = cart.filter((item) => {
-      if (initialItemsCount > 0) {
-        return item.es_adicion;
-      }
-      return true;
-    });
+  await supabase.from("mesas").update({ estado: "pendiente_servir" }).eq("id", selectedMesa.id);
 
-    for (const item of itemsADescuentar) {
-      if (item.producto.id) {
-        const stockActual = item.producto.stock ?? 50;
-        const nuevoStock = Math.max(0, stockActual - item.cantidad);
-        await supabase
-          .from("productos")
-          .update({ stock: nuevoStock, disponible: nuevoStock > 0 })
-          .eq("id", item.producto.id);
-      }
-    }
+  let { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", selectedMesa.id).eq("estado", "abierto").single();
 
-    await supabase.from("mesas").update({ estado: "pendiente_servir" }).eq("id", selectedMesa.id);
+  if (!pedido) {
+    const { data: newPedido } = await supabase
+      .from("pedidos")
+      .insert({ mesa_id: selectedMesa.id, total: subtotalAmount, estado: "abierto", estado_pedido: "pendiente_servir" })
+      .select().single();
+    pedido = newPedido;
+  } else {
+    await supabase.from("pedidos").update({ total: subtotalAmount, estado_pedido: "pendiente_servir" }).eq("id", pedido.id);
+  }
 
-    let { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", selectedMesa.id).eq("estado", "abierto").single();
+  if (pedido && cart.length > 0) {
+    // En lugar de borrar todo, actualizamos o insertamos manteniendo los IDs anteriores si ya existían,
+    // o simplemente insertamos los nuevos items que tengan es_adicion: true.
+    // Para asegurar que los antiguos conserven su estado y los nuevos entren como adición:
+    const itemsToInsert = cart.map((item) => ({
+      pedido_id: pedido.id,
+      producto_id: item.producto.id,
+      cantidad: item.cantidad,
+      precio_unitario: item.producto.precio,
+      es_adicion: item.es_adicion || false,
+    }));
 
-    if (!pedido) {
-      const { data: newPedido } = await supabase
-        .from("pedidos")
-        .insert({ mesa_id: selectedMesa.id, total: subtotalAmount, estado: "abierto", estado_pedido: "pendiente_servir" })
-        .select().single();
-      pedido = newPedido;
-    } else {
-      await supabase.from("pedidos").update({ total: subtotalAmount, estado_pedido: "pendiente_servir" }).eq("id", pedido.id);
-      await supabase.from("pedido_items").delete().eq("pedido_id", pedido.id);
-    }
+    // Reemplazamos los ítems del pedido manteniendo la distinción exacta
+    await supabase.from("pedido_items").delete().eq("pedido_id", pedido.id);
+    await supabase.from("pedido_items").insert(itemsToInsert);
+  }
 
-    if (pedido && cart.length > 0) {
-      const itemsToInsert = cart.map((item) => ({
-        pedido_id: pedido.id,
-        producto_id: item.producto.id,
-        cantidad: item.cantidad,
-        precio_unitario: item.producto.precio,
-        es_adicion: item.es_adicion || false,
-      }));
-      await supabase.from("pedido_items").insert(itemsToInsert);
-    }
-
-    fetchData();
-    setSelectedMesa(null);
-  };
+  fetchData();
+  setSelectedMesa(null);
+};
+  
 
   const handleEntregarAMesa = async (mesaId: number, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -860,7 +866,7 @@ export default function HomePOS() {
             <ShieldCheck className="w-4 h-4" /> ADMIN
           </button>
 
-          {/* MENÚ DE 3 PUNTOS ACTUALIZADO CON 4 OPCIONES */}
+          {/* MENÚ DE 3 PUNTOS CON 4 OPCIONES */}
           <div className="relative">
             <button
               onClick={() => setShowHeaderMenu(!showHeaderMenu)}
@@ -907,7 +913,7 @@ export default function HomePOS() {
         </div>
       </header>
 
-      {/* VISTA COCINA (CORREGIDA) */}
+      {/* VISTA COCINA */}
       {vista === "cocina" && (
         <main className="flex-1 overflow-y-auto p-4 sm:p-8 max-w-7xl mx-auto w-full">
           <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2 mb-6">
@@ -920,88 +926,69 @@ export default function HomePOS() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-              {pedidosCocina.map((p) => {
-                const entregados = p.pedido_items?.filter((i) => !i.es_adicion) || [];
-                const adicionesPendientes = p.pedido_items?.filter((i) => i.es_adicion) || [];
+             {pedidosCocina.map((p) => {
+  // Agrupamos items por número de adición (es_adicion es booleano, 
+  // si tu BD solo tiene ese booleano, podemos inferirlo del ID o timestamp si fuera necesario, 
+  // pero aquí mantendré la lógica de "entregados" vs "nuevos")
+  const items = p.pedido_items || [];
+  
+  // Lógica: Si el ítem ya fue marcado en una instancia previa, está "entregado".
+  // Para que esto persista, al dar "LISTO", el estado debe cambiar globalmente.
+  // Aquí los separamos visualmente por su estado de "preparación"
+  const itemsPorProcesar = items.filter(it => it.es_adicion); 
+  const itemsYaServidos = items.filter(it => !it.es_adicion);
 
-                return (
-                  <div key={p.id} className="bg-slate-900 border-2 border-amber-500/60 p-6 rounded-3xl flex flex-col justify-between shadow-2xl relative">
-                    <div>
-                      <div className="flex justify-between items-center pb-3 border-b border-slate-800 pr-8">
-                        <h3 className="font-black text-xl text-white">{p.mesas?.nombre || `Espacio ${p.mesa_id}`}</h3>
-                        <span className="text-xs font-mono text-slate-400 flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-lg">
-                          <Clock className="w-3.5 h-3.5 text-amber-400" />
-                          {new Date(p.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        </span>
-                      </div>
+  return (
+    <div key={p.id} className="bg-slate-900 border-2 border-amber-500/60 p-6 rounded-3xl flex flex-col justify-between shadow-2xl relative">
+      <div>
+        <div className="flex justify-between items-center pb-3 border-b border-slate-800 pr-8">
+          <h3 className="font-black text-xl text-white">{p.mesas?.nombre}</h3>
+          <span className="text-xs font-mono text-slate-400 bg-slate-950 px-2 py-1 rounded-lg">
+            {new Date(p.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </span>
+        </div>
 
-                      <button
-                        onClick={() => handleCancelarComanda(p.id, p.mesa_id)}
-                        className="absolute top-5 right-5 p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white border border-rose-500/30 transition-all cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+        <div className="my-5 space-y-4">
+          {/* SECCIÓN VERDE: Lo que ya se preparó */}
+          {itemsYaServidos.length > 0 && (
+            <div className="space-y-1">
+              <span className="text-[9px] font-black uppercase text-emerald-400">✅ Preparado (Histórico)</span>
+              {itemsYaServidos.map((it) => (
+                <div key={it.id} className="flex justify-between items-center text-xs font-bold p-2 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-300">
+                  <span>{it.cantidad}x {it.productos?.nombre}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
-                      <div className="my-5 space-y-4">
-                        {/* PRODUCTOS YA SERVIDOS/ENTREGADOS A LA MESA EN VERDE */}
-                        {entregados.length > 0 && adicionesPendientes.length > 0 && (
-                          <div className="space-y-2">
-                            <span className="text-[10px] font-black uppercase text-emerald-400 block tracking-wider">
-                              ✅ Productos ya cocinados / entregados:
-                            </span>
-                            {entregados.map((it) => (
-                              <div key={it.id} className="flex justify-between items-center text-xs font-bold p-2.5 rounded-xl border bg-emerald-950/20 border-emerald-500/40 text-emerald-300 opacity-70">
-                                <span className="flex items-center gap-1.5">
-                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                                  {it.cantidad}x {it.productos?.nombre}
-                                </span>
-                                <span className="font-mono text-[11px]">${formatCurrency(it.precio_unitario * it.cantidad)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
+          {/* SECCIÓN ROJA: Nuevas adiciones numeradas */}
+          {itemsPorProcesar.length > 0 && (
+            <div className="space-y-1">
+              <span className="text-[9px] font-black uppercase text-rose-500">🚨 Nueva Adición (Pendiente)</span>
+              {itemsPorProcesar.map((it, idx) => (
+                <div key={it.id} className="flex justify-between items-center text-sm font-black p-3 rounded-xl bg-rose-950/40 border border-rose-500 text-rose-200">
+                  <span className="flex items-center gap-2">
+                    <span className="bg-rose-500 text-white w-5 h-5 flex items-center justify-center rounded-full text-[10px]">
+                      {idx + 1}
+                    </span>
+                    {it.cantidad}x {it.productos?.nombre}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
 
-                        {/* PRODUCTOS PENDIENTES POR COCINAR EN ROJO / PENDIENTES */}
-                        <div className="space-y-2">
-                          {adicionesPendientes.length > 0 && (
-                            <span className="text-[10px] font-black uppercase text-rose-400 block tracking-wider">
-                              🚨 Adición urgente por cocinar:
-                            </span>
-                          )}
-
-                          {(adicionesPendientes.length > 0 ? adicionesPendientes : p.pedido_items)?.map((it) => (
-                            <div key={it.id} className={`flex justify-between items-center text-sm font-bold p-3 rounded-xl border shadow-md ${
-                              adicionesPendientes.length > 0 
-                                ? "bg-rose-950/40 border-rose-500/80 text-rose-200" 
-                                : "bg-slate-950/80 border-slate-800 text-slate-200"
-                            }`}>
-                              <span className="flex items-center gap-2">
-                                <AlertCircle className={`w-4 h-4 ${adicionesPendientes.length > 0 ? "text-rose-400" : "text-amber-400"}`} />
-                                {it.cantidad}x {it.productos?.nombre}
-                              </span>
-                              <span className="font-mono text-xs text-slate-400">${formatCurrency(it.precio_unitario * it.cantidad)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="pt-3 border-t border-slate-800 space-y-3">
-                      <div className="flex justify-between items-center text-sm font-black">
-                        <span className="text-slate-400">TOTAL COMANDA:</span>
-                        <span className="font-mono text-emerald-400 text-base">${formatCurrency(p.total)}</span>
-                      </div>
-
-                      <button
-                        onClick={() => handleCocinaListo(p.id, p.mesa_id)}
-                        className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-sm uppercase rounded-2xl cursor-pointer flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.4)] transition-all active:scale-95"
-                      >
-                        <Check className="w-5 h-5" /> LISTO
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+      <button
+        onClick={() => handleCocinaListo(p.id, p.mesa_id)}
+        className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-sm uppercase rounded-2xl cursor-pointer flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.4)]"
+      >
+        <Check className="w-5 h-5" /> MARCAR LISTO (TODO)
+      </button>
+    </div>
+  );
+})}
             </div>
           )}
         </main>
@@ -1062,12 +1049,12 @@ export default function HomePOS() {
                       onClick={() => handleSelectMesa(mesa)}
                       className={`group relative rounded-3xl p-5 border-2 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between h-64 sm:h-72 shadow-2xl ${
                         isLibre
-                          ? "bg-slate-900/90 border-emerald-500/50 hover:border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)] hover:shadow-[0_0_25px_rgba(16,185,129,0.3)]"
+                          ? "bg-emerald-950/30 border-emerald-500/70 hover:border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.25)] hover:shadow-[0_0_30px_rgba(16,185,129,0.4)]"
                           : isPendServir
-                          ? "bg-amber-950/40 border-amber-500 shadow-[0_0_20px_rgba(245,158,11,0.25)] hover:shadow-[0_0_30px_rgba(245,158,11,0.4)]"
+                          ? "bg-orange-950/40 border-orange-500 shadow-[0_0_20px_rgba(249,115,22,0.3)] hover:shadow-[0_0_30px_rgba(249,115,22,0.5)]"
                           : isPreparado
                           ? "bg-purple-950/50 border-purple-500 shadow-[0_0_30px_rgba(168,85,247,0.5)] animate-pulse hover:shadow-[0_0_40px_rgba(168,85,247,0.7)]"
-                          : "bg-cyan-950/40 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.25)] hover:shadow-[0_0_30px_rgba(6,182,212,0.4)]"
+                          : "bg-cyan-950/40 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)] hover:shadow-[0_0_30px_rgba(6,182,212,0.5)]"
                       }`}
                     >
                       <div className="flex justify-between items-start gap-1 z-10">
@@ -1093,19 +1080,19 @@ export default function HomePOS() {
                           )}
                         </div>
 
-                        <span className={`text-[9px] sm:text-[10px] font-black px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full uppercase flex items-center gap-1 tracking-wider shadow-md shrink-0 ${
+                        <span className={`text-[10px] sm:text-xs font-black px-2.5 py-1 rounded-full uppercase flex items-center gap-1 tracking-wider shadow-md shrink-0 ${
                           isLibre
-                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                            ? "bg-emerald-500 text-slate-950 border border-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.5)]"
                             : isPendServir
-                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                            ? "bg-orange-500 text-slate-950 border border-orange-300 shadow-[0_0_10px_rgba(249,115,22,0.5)]"
                             : isPreparado
-                            ? "bg-purple-500/30 text-purple-200 border border-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.5)]"
-                            : "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                            ? "bg-purple-500 text-white border border-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.7)]"
+                            : "bg-cyan-400 text-slate-950 border border-cyan-200 shadow-[0_0_10px_rgba(6,182,212,0.5)]"
                         }`}>
-                          {isLibre && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
-                          {isPendServir && <Clock className="w-3 h-3 text-amber-400" />}
-                          {isPreparado && <Sparkle className="w-3 h-3 text-purple-300 animate-spin" />}
-                          {isServido && <ChefHat className="w-3 h-3 text-cyan-400" />}
+                          {isLibre && <CheckCircle2 className="w-3.5 h-3.5 text-slate-950" />}
+                          {isPendServir && <Clock className="w-3.5 h-3.5 text-slate-950" />}
+                          {isPreparado && <Sparkle className="w-3.5 h-3.5 text-white animate-spin" />}
+                          {isServido && <ChefHat className="w-3.5 h-3.5 text-slate-950" />}
                           {mesa.estado.replace("_", " ")}
                         </span>
                       </div>
@@ -1116,11 +1103,11 @@ export default function HomePOS() {
                           alt={mesa.nombre} 
                           className="h-20 sm:h-22 w-auto object-contain opacity-85 group-hover:scale-105 transition-transform duration-300" 
                         />
-                        <span className={`text-xl sm:text-2xl font-black uppercase tracking-widest mt-1 drop-shadow-[0_2px_10px_rgba(0,0,0,0.8)] ${
+                        <span className={`text-2xl sm:text-3xl font-black uppercase tracking-widest mt-1 drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)] ${
                           isLibre 
                             ? "text-emerald-400" 
                             : isPendServir 
-                            ? "text-amber-400" 
+                            ? "text-orange-400" 
                             : isPreparado 
                             ? "text-purple-300 animate-bounce" 
                             : "text-cyan-300"
@@ -1156,7 +1143,7 @@ export default function HomePOS() {
                                   ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 group-hover:bg-emerald-500 group-hover:text-slate-950" 
                                   : isServido 
                                   ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30 group-hover:bg-cyan-500 group-hover:text-slate-950"
-                                  : "bg-amber-500/10 text-amber-300 border-amber-500/30 group-hover:bg-amber-500 group-hover:text-slate-950"
+                                  : "bg-orange-500/10 text-orange-300 border-orange-500/30 group-hover:bg-orange-500 group-hover:text-slate-950"
                               }`}>
                                 {isLibre ? (
                                   <><Plus className="w-3.5 h-3.5" /> Tomar Pedido</>
@@ -1205,12 +1192,12 @@ export default function HomePOS() {
                       onClick={() => handleSelectMesa(mesa)}
                       className={`group relative rounded-3xl p-5 border-2 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between h-64 sm:h-72 shadow-2xl ${
                         isLibre
-                          ? "bg-slate-900/90 border-emerald-500/50 hover:border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)] hover:shadow-[0_0_25px_rgba(16,185,129,0.3)]"
+                          ? "bg-emerald-950/30 border-emerald-500/70 hover:border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.25)] hover:shadow-[0_0_30px_rgba(16,185,129,0.4)]"
                           : isPendServir
-                          ? "bg-amber-950/40 border-amber-500 shadow-[0_0_20px_rgba(245,158,11,0.25)] hover:shadow-[0_0_30px_rgba(245,158,11,0.4)]"
+                          ? "bg-orange-950/40 border-orange-500 shadow-[0_0_20px_rgba(249,115,22,0.3)] hover:shadow-[0_0_30px_rgba(249,115,22,0.5)]"
                           : isPreparado
                           ? "bg-purple-950/50 border-purple-500 shadow-[0_0_30px_rgba(168,85,247,0.5)] animate-pulse hover:shadow-[0_0_40px_rgba(168,85,247,0.7)]"
-                          : "bg-cyan-950/40 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.25)] hover:shadow-[0_0_30px_rgba(6,182,212,0.4)]"
+                          : "bg-cyan-950/40 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)] hover:shadow-[0_0_30px_rgba(6,182,212,0.5)]"
                       }`}
                     >
                       <div className="flex justify-between items-start gap-1 z-10">
@@ -1236,19 +1223,19 @@ export default function HomePOS() {
                           )}
                         </div>
 
-                        <span className={`text-[9px] sm:text-[10px] font-black px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full uppercase flex items-center gap-1 tracking-wider shadow-md shrink-0 ${
+                        <span className={`text-[10px] sm:text-xs font-black px-2.5 py-1 rounded-full uppercase flex items-center gap-1 tracking-wider shadow-md shrink-0 ${
                           isLibre
-                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                            ? "bg-emerald-500 text-slate-950 border border-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.5)]"
                             : isPendServir
-                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                            ? "bg-orange-500 text-slate-950 border border-orange-300 shadow-[0_0_10px_rgba(249,115,22,0.5)]"
                             : isPreparado
-                            ? "bg-purple-500/30 text-purple-200 border border-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.5)]"
-                            : "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                            ? "bg-purple-500 text-white border border-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.7)]"
+                            : "bg-cyan-400 text-slate-950 border border-cyan-200 shadow-[0_0_10px_rgba(6,182,212,0.5)]"
                         }`}>
-                          {isLibre && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
-                          {isPendServir && <Clock className="w-3 h-3 text-amber-400" />}
-                          {isPreparado && <Sparkle className="w-3 h-3 text-purple-300 animate-spin" />}
-                          {isServido && <ChefHat className="w-3 h-3 text-cyan-400" />}
+                          {isLibre && <CheckCircle2 className="w-3.5 h-3.5 text-slate-950" />}
+                          {isPendServir && <Clock className="w-3.5 h-3.5 text-slate-950" />}
+                          {isPreparado && <Sparkle className="w-3.5 h-3.5 text-white animate-spin" />}
+                          {isServido && <ChefHat className="w-3.5 h-3.5 text-slate-950" />}
                           {mesa.estado.replace("_", " ")}
                         </span>
                       </div>
@@ -1259,11 +1246,11 @@ export default function HomePOS() {
                           alt={mesa.nombre} 
                           className="h-20 sm:h-22 w-auto object-contain opacity-85 group-hover:scale-105 transition-transform duration-300" 
                         />
-                        <span className={`text-xl sm:text-2xl font-black uppercase tracking-widest mt-1 drop-shadow-[0_2px_10px_rgba(0,0,0,0.8)] ${
+                        <span className={`text-2xl sm:text-3xl font-black uppercase tracking-widest mt-1 drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)] ${
                           isLibre 
                             ? "text-emerald-400" 
                             : isPendServir 
-                            ? "text-amber-400" 
+                            ? "text-orange-400" 
                             : isPreparado 
                             ? "text-purple-300 animate-bounce" 
                             : "text-cyan-300"
@@ -1299,7 +1286,7 @@ export default function HomePOS() {
                                   ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 group-hover:bg-emerald-500 group-hover:text-slate-950" 
                                   : isServido 
                                   ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30 group-hover:bg-cyan-500 group-hover:text-slate-950"
-                                  : "bg-amber-500/10 text-amber-300 border-amber-500/30 group-hover:bg-amber-500 group-hover:text-slate-950"
+                                  : "bg-orange-500/10 text-orange-300 border-orange-500/30 group-hover:bg-orange-500 group-hover:text-slate-950"
                               }`}>
                                 {isLibre ? (
                                   <><Plus className="w-3.5 h-3.5" /> Tomar Pedido</>
@@ -1707,7 +1694,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL APERTURA DE DÍA (ACTUALIZADO CON NOMBRE) */}
+      {/* MODAL APERTURA DE DÍA */}
       {showAperturaModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
@@ -1956,7 +1943,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL COBRO EN CAJA (CON RECARGO DE TARJETA 5%) */}
+      {/* MODAL COBRO EN CAJA */}
       {showCheckout && selectedMesa && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-lg w-full shadow-2xl relative max-h-[90vh] overflow-y-auto">
