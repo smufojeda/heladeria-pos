@@ -312,35 +312,30 @@ export default function HomePOS() {
     setListaFiados(result);
   };
 
-  // CONSULTAR HISTORIAL DE PRODUCTOS YA PAGADOS EN ESTE DÍA/MESA
-  const fetchHistorialPagosMesa = async (mesaId: number, cierreDiarioId?: number) => {
-    if (!cierreDiarioId) return;
-    const { data: ventasPrevias } = await supabase
-      .from("ventas")
-      .select("items_detalle, created_at")
-      .eq("mesa_id", mesaId)
-      .eq("cierre_diario_id", cierreDiarioId)
-      .order("created_at", { ascending: false });
+const fetchHistorialPagosMesa = async (mesaId: number, cierreDiarioId?: number) => {
+  const historial: { nombre: string; cantidad: number; precio: number; fecha: string }[] = [];
 
-    if (ventasPrevias && ventasPrevias.length > 0) {
-      const historial: { nombre: string; cantidad: number; precio: number; fecha: string }[] = [];
-      ventasPrevias.forEach((v: any) => {
-        if (v.items_detalle && Array.isArray(v.items_detalle)) {
-          v.items_detalle.forEach((it: any) => {
-            historial.push({
-              nombre: it.nombre,
-              cantidad: it.cantidad,
-              precio: it.precio,
-              fecha: v.created_at
-            });
-          });
-        }
+  // Ítems pagados parcialmente únicamente dentro del pedido actualmente abierto
+  const { data: pedidoActivo } = await supabase
+    .from("pedidos")
+    .select("historial_items_pagados, updated_at")
+    .eq("mesa_id", mesaId)
+    .eq("estado", "abierto")
+    .maybeSingle();
+
+  if (pedidoActivo?.historial_items_pagados && Array.isArray(pedidoActivo.historial_items_pagados)) {
+    pedidoActivo.historial_items_pagados.forEach((it: any) => {
+      historial.push({
+        nombre: it.nombre,
+        cantidad: it.cantidad,
+        precio: it.precio,
+        fecha: pedidoActivo.updated_at || new Date().toISOString(),
       });
-      setHistorialPagados(historial);
-    } else {
-      setHistorialPagados([]);
-    }
-  };
+    });
+  }
+
+  setHistorialPagados(historial);
+};
 
   useEffect(() => {
     fetchData();
@@ -636,54 +631,61 @@ export default function HomePOS() {
     triggerAlert("¡Cierre de día guardado con éxito!");
   };
 
-  const handleSelectMesa = async (mesa: Mesa) => {
-    if (vista === "caja" && mesa.estado === "libre") return;
+ const handleSelectMesa = async (mesa: Mesa) => {
+  if (vista === "caja" && mesa.estado === "libre") return;
 
-    setSelectedMesa(mesa);
-    setCart([]);
-    setInitialItemsCount(0);
-    setCurrentMaxLote(0);
-    setShowCheckout(false);
-    setSaleCompleted(false);
-    setShowMobileCart(false);
-    setPagos([]);
-    setMontoIngresado("");
-    setEfectivoRecibido("");
-    setClienteFiado("");
+  setSelectedMesa(mesa);
+  setCart([]);
+  setInitialItemsCount(0);
+  setCurrentMaxLote(0);
+  setShowCheckout(false);
+  setSaleCompleted(false);
+  setShowMobileCart(false);
+  setPagos([]);
+  setMontoIngresado("");
+  setEfectivoRecibido("");
+  setClienteFiado("");
 
-    // Consultar historial de pagos ya realizados en esta mesa
-    fetchHistorialPagosMesa(mesa.id, cierreActivo?.id);
+  // 1. Cargar el historial completo de pagos desde la BD
+  await fetchHistorialPagosMesa(mesa.id, cierreActivo?.id);
 
-    const { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", mesa.id).eq("estado", "abierto").maybeSingle();
+  // 2. Cargar el pedido activo de la mesa
+  const { data: pedido } = await supabase
+    .from("pedidos")
+    .select("*, pagos_acumulados, historial_items_pagados, pedido_items(*, productos(*))")
+    .eq("mesa_id", mesa.id)
+    .eq("estado", "abierto")
+    .maybeSingle();
 
-    if (pedido) {
-      const { data: items } = await supabase.from("pedido_items").select("*, productos(*)").eq("pedido_id", pedido.id);
-      if (items && items.length > 0) {
-        const maxLote = Math.max(...items.map((it: any) => it.lote_adicion || 0));
-        setCurrentMaxLote(maxLote);
+  if (pedido) {
+    const items = pedido.pedido_items || [];
+    if (items.length > 0) {
+      const maxLote = Math.max(...items.map((it: any) => it.lote_adicion || 0));
+      setCurrentMaxLote(maxLote);
 
-        const loadedCart: CartItem[] = items.map((it: any) => ({
-          producto: it.productos,
-          cantidad: it.cantidad,
-          notas: it.notas || "",
-          es_adicion: it.es_adicion || false,
-          lote_adicion: it.lote_adicion || 0,
-        }));
-        setCart(loadedCart);
+      const loadedCart: CartItem[] = items.map((it: any) => ({
+        producto: it.productos,
+        cantidad: it.cantidad,
+        notas: it.notas || "",
+        es_adicion: it.es_adicion || false,
+        lote_adicion: it.lote_adicion || 0,
+      }));
+      setCart(loadedCart);
 
-        const totalExistentes = loadedCart.reduce((acc, i) => acc + i.cantidad, 0);
-        setInitialItemsCount(totalExistentes);
+      const totalExistentes = loadedCart.reduce((acc, i) => acc + i.cantidad, 0);
+      setInitialItemsCount(totalExistentes);
 
-        setPayAllProducts(true);
-        const allKeys = loadedCart.map((it, i) => `${it.producto.id}-${it.lote_adicion || 0}-${i}`);
-        setSelectedCartItemKeys(allKeys);
-      }
+      setPayAllProducts(true);
+      const allKeys = loadedCart.map((it, i) => `${it.producto.id}-${it.lote_adicion || 0}-${i}`);
+      setSelectedCartItemKeys(allKeys);
     }
+  }
 
-    if (vista === "caja" && mesa.estado !== "libre") {
-      setShowCheckout(true);
-    }
-  };
+  // 3. Abrir la ventana de cobro directamente si estamos en Caja
+  if (vista === "caja" && mesa.estado !== "libre") {
+    setShowCheckout(true);
+  }
+};
 
   const handleCardClick = (mesa: Mesa, e: React.MouseEvent) => {
     if (vista === "caja") {
@@ -914,54 +916,91 @@ export default function HomePOS() {
   };
 
   const handleFinalizeSale = async () => {
-    if (!selectedMesa || itemsToPay.length === 0) return;
-    if (!cierreActivo) return triggerAlert("Se requiere un día abierto para finalizar ventas.");
-    if (saldoPendiente > 0) return triggerAlert(`No se puede procesar el cobro. Aún hay un saldo pendiente de $${formatCurrency(saldoPendiente)}`);
+  if (!selectedMesa || itemsToPay.length === 0) return;
+  if (!cierreActivo) return triggerAlert("Se requiere un día abierto para finalizar ventas.");
+  if (saldoPendiente > 0) return triggerAlert(`No se puede procesar el cobro. Aún hay un saldo pendiente de $${formatCurrency(saldoPendiente)}`);
 
-    const itemsSummary = itemsToPay.map((i) => ({ nombre: i.producto.nombre, cantidad: i.cantidad, precio: i.producto.precio }));
-    const fiadoItem = pagos.find((p) => p.metodo === "fiado");
+  const remainingCart = cart.filter((item, idx) => !selectedCartItemKeys.includes(getItemKey(item, idx)));
+  const esUltimoCobro = remainingCart.length === 0 || payAllProducts;
+
+  const { data: pedido } = await supabase
+    .from("pedidos")
+    .select("*, pedido_items(*, productos(*))")
+    .eq("mesa_id", selectedMesa.id)
+    .eq("estado", "abierto")
+    .maybeSingle();
+
+  if (!pedido) return triggerAlert("No se encontró un pedido activo para esta mesa.");
+
+  const pagosPrevios: PagoParcial[] = pedido.pagos_acumulados || [];
+  const pagosTotalesConsolidados = [...pagosPrevios, ...pagos];
+
+  // Detalle de los ítems que se están abonando/pagando en este paso
+  const itemsProcesados = itemsToPay.map((it) => ({
+    nombre: it.producto.nombre,
+    cantidad: it.cantidad,
+    precio: it.producto.precio,
+  }));
+
+  const historialAnterior = pedido.historial_items_pagados || [];
+  const nuevoHistorialPagados = [...historialAnterior, ...itemsProcesados];
+
+  if (!esUltimoCobro) {
+    // 1. SI ES COBRO PARCIAL: Solo actualizamos 'pedidos' sin tocar 'ventas'
+    const itemsToKeep = remainingCart.map((item) => ({
+      pedido_id: pedido.id,
+      producto_id: item.producto.id,
+      cantidad: item.cantidad,
+      precio_unitario: item.producto.precio,
+      es_adicion: item.es_adicion || false,
+      lote_adicion: item.lote_adicion || 0,
+    }));
+
+    await supabase.from("pedido_items").delete().eq("pedido_id", pedido.id);
+    await supabase.from("pedido_items").insert(itemsToKeep);
+
+    await supabase
+      .from("pedidos")
+      .update({
+        pagos_acumulados: pagosTotalesConsolidados,
+        historial_items_pagados: nuevoHistorialPagados,
+        total: remainingCart.reduce((acc, i) => acc + i.producto.precio * i.cantidad, 0),
+      })
+      .eq("id", pedido.id);
+
+  } else {
+    // 2. SI ES EL ÚLTIMO COBRO (O PAGO COMPLETO DE UNA): Insertamos UNA SOLA venta consolidada en 'ventas'
+    const todosLosItemsConsolidados = [
+      ...nuevoHistorialPagados
+    ];
+
+    const subtotalConsolidado = todosLosItemsConsolidados.reduce((acc: number, i: any) => acc + i.precio * i.cantidad, 0);
+    const totalConsolidado = Math.max(0, subtotalConsolidado - discountVal);
+    const fiadoItem = pagosTotalesConsolidados.find((p) => p.metodo === "fiado");
 
     await supabase.from("ventas").insert({
       cierre_diario_id: cierreActivo.id,
       mesa_id: selectedMesa.id,
       numero_mesa: selectedMesa.numero,
-      metodo_pago: pagos.map((p) => p.metodo).join(", "),
-      desglose_pagos: pagos,
+      metodo_pago: Array.from(new Set(pagosTotalesConsolidados.map((p) => p.metodo))).join(", "),
+      desglose_pagos: pagosTotalesConsolidados,
       cliente_nombre: fiadoItem ? fiadoItem.clienteFiado : null,
-      subtotal: subtotalAmount,
+      subtotal: subtotalConsolidado,
       descuento: discountVal,
-      total: finalTotal,
-      items_detalle: itemsSummary,
+      total: totalConsolidado,
+      items_detalle: todosLosItemsConsolidados,
     });
 
-    const remainingCart = cart.filter((item, idx) => !selectedCartItemKeys.includes(getItemKey(item, idx)));
+    const idxMesa = mesas.findIndex((m) => m.id === selectedMesa.id);
+    const nombreOriginal = idxMesa !== -1 ? getNombreOriginal(selectedMesa.numero, idxMesa) : selectedMesa.nombre;
 
-    if (remainingCart.length === 0 || payAllProducts) {
-      const idxMesa = mesas.findIndex((m) => m.id === selectedMesa.id);
-      const nombreOriginal = idxMesa !== -1 ? getNombreOriginal(selectedMesa.numero, idxMesa) : selectedMesa.nombre;
+    await supabase.from("pedidos").update({ estado: "pagado", estado_pedido: "servido" }).eq("id", pedido.id);
+    await supabase.from("mesas").update({ estado: "libre", nombre: nombreOriginal }).eq("id", selectedMesa.id);
+  }
 
-      await supabase.from("pedidos").update({ estado: "pagado", estado_pedido: "servido" }).eq("mesa_id", selectedMesa.id).eq("estado", "abierto");
-      await supabase.from("mesas").update({ estado: "libre", nombre: nombreOriginal }).eq("id", selectedMesa.id);
-    } else {
-      const { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", selectedMesa.id).eq("estado", "abierto").single();
-      if (pedido) {
-        const itemsToKeep = remainingCart.map((item) => ({
-          pedido_id: pedido.id,
-          producto_id: item.producto.id,
-          cantidad: item.cantidad,
-          precio_unitario: item.producto.precio,
-          es_adicion: item.es_adicion || false,
-          lote_adicion: item.lote_adicion || 0,
-        }));
-        await supabase.from("pedido_items").delete().eq("pedido_id", pedido.id);
-        await supabase.from("pedido_items").insert(itemsToKeep);
-      }
-    }
-
-    setSaleCompleted(true);
-    fetchData();
-  };
-
+  setSaleCompleted(true);
+  fetchData();
+};
   const filteredProducts = productos.filter((p) => {
     const matchesCat = selectedCategory === "Todos" || p.categoria === selectedCategory;
     const matchesSearch = p.nombre.toLowerCase().includes(searchQuery.toLowerCase());
@@ -1629,9 +1668,9 @@ export default function HomePOS() {
                     ) : (
                       <button
                         onClick={() => setShowCheckout(true)}
-                        disabled={cart.length === 0}
+                        disabled={cart.length === 0 && historialPagados.length === 0}
                         className={`px-3.5 py-2.5 font-black text-xs uppercase rounded-xl flex items-center gap-1.5 transition-all ${
-                          cart.length === 0 ? "bg-slate-800 text-slate-500 cursor-not-allowed" : "bg-pink-500 hover:bg-pink-400 text-white shadow-md cursor-pointer active:scale-95"
+                          cart.length === 0 && historialPagados.length === 0 ? "bg-slate-800 text-slate-500 cursor-not-allowed" : "bg-pink-500 hover:bg-pink-400 text-white shadow-md cursor-pointer active:scale-95"
                         }`}
                       >
                         <CreditCard className="w-4 h-4" /> Cobrar
@@ -1645,10 +1684,30 @@ export default function HomePOS() {
                     <h2 className="hidden lg:flex font-black text-lg text-white items-center gap-2 pb-3 border-b border-slate-800">
                       <Receipt className="w-5 h-5 text-pink-400" /> {selectedMesa.nombre}
                     </h2>
+
+                    {historialPagados.length > 0 && (
+                      <div className="my-3 bg-emerald-950/30 p-3 rounded-2xl border border-emerald-500/40 space-y-2">
+                        <span className="text-[10px] font-black uppercase text-emerald-400 flex items-center gap-1.5 border-b border-emerald-500/20 pb-1">
+                          <History className="w-3.5 h-3.5 text-emerald-400" /> ✓ Pagados Anteriormente
+                        </span>
+                        <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                          {historialPagados.map((item, idx) => (
+                            <div key={idx} className="flex justify-between items-center text-xs font-bold text-emerald-200/90">
+                              <span className="flex items-center gap-1.5 truncate max-w-[170px]">
+                                <Check className="w-3 h-3 text-emerald-400 shrink-0" /> {item.cantidad}x {item.nombre}
+                              </span>
+                              <span className="font-mono text-[11px] text-emerald-400 shrink-0">
+                                ${formatCurrency(item.precio * item.cantidad)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     
                     <div className="my-3 space-y-2 max-h-[40vh] lg:max-h-[50vh] overflow-y-auto pr-1">
                       {cart.length === 0 ? (
-                        <p className="text-xs text-slate-500 font-bold py-4 text-center">No hay productos añadidos</p>
+                        <p className="text-xs text-slate-500 font-bold py-4 text-center">No hay productos pendientes en la orden</p>
                       ) : (
                         cart.map((item, idx) => (
                           <div key={`${item.producto.id}-${item.lote_adicion || 0}-${idx}`} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between">
@@ -1680,7 +1739,7 @@ export default function HomePOS() {
 
                   <div className="pt-3 border-t border-slate-800 space-y-3">
                     <div className="hidden lg:flex justify-between text-lg font-black text-white">
-                      <span>TOTAL</span>
+                      <span>TOTAL PENDIENTE</span>
                       <span className="font-mono text-emerald-400">${formatCurrency(subtotalAmount)}</span>
                     </div>
 
@@ -1689,7 +1748,7 @@ export default function HomePOS() {
                         <ChefHat className="w-5 h-5" /> Enviar a Cocina
                       </button>
                     ) : (
-                      <button onClick={() => setShowCheckout(true)} disabled={cart.length === 0} className="hidden lg:flex w-full py-3.5 bg-pink-500 hover:bg-pink-400 text-white font-black text-xs uppercase rounded-2xl shadow items-center justify-center gap-2 cursor-pointer active:scale-95">
+                      <button onClick={() => setShowCheckout(true)} disabled={cart.length === 0 && historialPagados.length === 0} className="hidden lg:flex w-full py-3.5 bg-pink-500 hover:bg-pink-400 text-white font-black text-xs uppercase rounded-2xl shadow items-center justify-center gap-2 cursor-pointer active:scale-95">
                         <CreditCard className="w-5 h-5" /> Ir al Módulo de Cobro
                       </button>
                     )}
@@ -2093,7 +2152,7 @@ export default function HomePOS() {
               <h3 className="font-black text-base text-white flex items-center gap-2">
                 <Lock className="w-5 h-5 text-amber-400" /> Cierre de Día
               </h3>
-              <button onClick={() => setShowCierreModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
+              <button onClick={() => setShowCierreModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
             </div>
 
             <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs font-bold">
@@ -2179,83 +2238,108 @@ export default function HomePOS() {
                   </button>
                 </div>
 
-                {/* HISTORIAL DE PRODUCTOS YA PAGADOS EN ESTA MESA */}
-                {historialPagados.length > 0 && (
-                  <div className="bg-emerald-950/30 p-3.5 rounded-2xl border border-emerald-500/40 mb-4 space-y-2">
-                    <span className="text-[10px] font-black uppercase text-emerald-400 flex items-center gap-1.5 border-b border-emerald-500/20 pb-1.5">
-                      <History className="w-3.5 h-3.5 text-emerald-400" /> Productos Ya Pagados Anteriormente
-                    </span>
-                    <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
-                      {historialPagados.map((item, idx) => (
-                        <div key={idx} className="flex justify-between items-center text-xs font-bold text-emerald-200/90">
-                          <span className="flex items-center gap-1.5">
-                            <Check className="w-3 h-3 text-emerald-400 shrink-0" /> {item.cantidad}x {item.nombre}
-                          </span>
-                          <span className="font-mono text-[11px] text-emerald-400">
-                            ${formatCurrency(item.precio * item.cantidad)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* SELECCIÓN INTERACTIVA DE PRODUCTOS PENDIENTES DE PAGO */}
+                {/* CONTENEDOR DE PRODUCTOS UNIFICADO (PAGADOS EN VERDE, PENDIENTES EN ROJO) */}
                 <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-3">
                   <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                     <span className="text-xs font-black text-slate-300 uppercase flex items-center gap-1.5">
-                      <CheckCircle2 className="w-4 h-4 text-pink-400" /> Productos Pendientes a Pagar
+                      <Receipt className="w-4 h-4 text-pink-400" /> Estado de Cuenta de la Mesa
                     </span>
-                    <button
-                      type="button"
-                      onClick={handleSelectAllProducts}
-                      className={`px-2.5 py-1 text-[10px] font-black uppercase rounded-lg border transition-all cursor-pointer ${
-                        payAllProducts
-                          ? "bg-pink-500/20 text-pink-300 border-pink-500/50"
-                          : "bg-slate-900 text-slate-400 border-slate-800 hover:text-white"
-                      }`}
-                    >
-                      Seleccionar Todos
-                    </button>
+                    {cart.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleSelectAllProducts}
+                        className={`px-2.5 py-1 text-[10px] font-black uppercase rounded-lg border transition-all cursor-pointer ${
+                          payAllProducts
+                            ? "bg-pink-500/20 text-pink-300 border-pink-500/50"
+                            : "bg-slate-900 text-slate-400 border-slate-800 hover:text-white"
+                        }`}
+                      >
+                        Seleccionar Pendientes
+                      </button>
+                    )}
                   </div>
 
-                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                    {cart.map((item, idx) => {
-                      const key = getItemKey(item, idx);
-                      const isSelected = payAllProducts || selectedCartItemKeys.includes(key);
+                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 max-h-64 overflow-y-auto pr-1">
+  {/* 1. PRODUCTOS YA PAGADOS (CUADRADITOS VERDES) */}
+  {historialPagados.map((item, idx) => (
+    <div
+      key={`pagado-${idx}`}
+      className="flex flex-col justify-between p-3 rounded-2xl border bg-emerald-950/40 border-emerald-500/60 text-emerald-200 select-none shadow-md min-h-[95px] relative"
+    >
+      <div className="flex items-start justify-between gap-1">
+        <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+          ✓ Pagado
+        </span>
+        <div className="w-4 h-4 rounded-md bg-emerald-500 text-slate-950 flex items-center justify-center shrink-0">
+          <Check className="w-3 h-3 stroke-[3]" />
+        </div>
+      </div>
 
-                      return (
-                        <div
-                          key={key}
-                          onClick={() => toggleSelectItem(key)}
-                          className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer select-none ${
-                            isSelected
-                              ? "bg-slate-900 border-pink-500/60 text-white"
-                              : "bg-slate-950/50 border-slate-900 text-slate-500 hover:border-slate-800"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2.5">
-                            <div
-                              className={`w-4 h-4 rounded-md border flex items-center justify-center transition-all ${
-                                isSelected ? "bg-pink-500 border-pink-400 text-white" : "border-slate-700 bg-slate-900"
-                              }`}
-                            >
-                              {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
-                            </div>
-                            <div>
-                              <span className="text-xs font-bold block">{item.cantidad}x {item.producto.nombre}</span>
-                              {item.es_adicion && (
-                                <span className="text-[9px] text-rose-400 font-bold">Adición #{item.lote_adicion}</span>
-                              )}
-                            </div>
-                          </div>
-                          <span className="font-mono text-xs font-bold">
-                            ${formatCurrency(item.producto.precio * item.cantidad)}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
+      <div className="my-1">
+        <h5 className="text-xs font-black line-clamp-2 leading-snug">
+          {item.cantidad}x {item.nombre}
+        </h5>
+      </div>
+
+      <div className="pt-1 border-t border-emerald-500/20 text-right">
+        <span className="font-mono text-xs font-black text-emerald-400">
+          ${formatCurrency(item.precio * item.cantidad)}
+        </span>
+      </div>
+    </div>
+  ))}
+
+  {/* 2. PRODUCTOS PENDIENTES POR PAGAR (CUADRADITOS ROJOS/ROSADOS) */}
+  {cart.map((item, idx) => {
+    const key = getItemKey(item, idx);
+    const isSelected = payAllProducts || selectedCartItemKeys.includes(key);
+
+    return (
+      <div
+        key={`pendiente-${key}`}
+        onClick={() => toggleSelectItem(key)}
+        className={`flex flex-col justify-between p-3 rounded-2xl border transition-all cursor-pointer select-none min-h-[95px] relative ${
+          isSelected
+            ? "bg-rose-950/40 border-rose-500 text-rose-100 shadow-md ring-1 ring-rose-500/50"
+            : "bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700"
+        }`}
+      >
+        <div className="flex items-start justify-between gap-1">
+          <span className="text-[9px] font-bold text-rose-400 uppercase tracking-wider truncate">
+            ⏳ Pendiente {item.es_adicion && `(#${item.lote_adicion})`}
+          </span>
+          <div
+            className={`w-4 h-4 rounded-md border flex items-center justify-center transition-all shrink-0 ${
+              isSelected
+                ? "bg-rose-500 border-rose-400 text-white"
+                : "border-slate-700 bg-slate-950"
+            }`}
+          >
+            {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+          </div>
+        </div>
+
+        <div className="my-1">
+          <h5 className="text-xs font-black line-clamp-2 leading-snug">
+            {item.cantidad}x {item.producto.nombre}
+          </h5>
+        </div>
+
+        <div className="pt-1 border-t border-slate-800 text-right">
+          <span className="font-mono text-xs font-black text-rose-300">
+            ${formatCurrency(item.producto.precio * item.cantidad)}
+          </span>
+        </div>
+      </div>
+    );
+  })}
+
+  {historialPagados.length === 0 && cart.length === 0 && (
+    <p className="col-span-full text-xs text-slate-500 font-bold py-6 text-center">
+      No hay registros de consumo en esta mesa.
+    </p>
+  )}
+</div>
                 </div>
 
                 <div className="bg-slate-950/60 p-3 rounded-2xl border border-slate-800 mb-4 flex items-center justify-between gap-3">
@@ -2476,7 +2560,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL GLOBAL DE ALERTAS PERSONALIZADAS DE ANTI CAFE */}
+      {/* MODAL GLOBAL DE ALERTAS PERSONALIZADAS */}
       {customAlert.show && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border-2 border-amber-500/60 rounded-3xl p-6 max-w-sm w-full shadow-[0_0_30px_rgba(245,158,11,0.3)] relative text-center space-y-4">
