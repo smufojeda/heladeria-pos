@@ -38,7 +38,8 @@ import {
   Pencil,
   RotateCcw,
   UserCheck,
-  Users
+  Users,
+  History
 } from "lucide-react";
 
 type EstadoMesa = "libre" | "pendiente_servir" | "preparado" | "servido" | "pendiente_pago";
@@ -68,6 +69,7 @@ interface CartItem {
   cantidad: number;
   notas?: string;
   es_adicion?: boolean;
+  lote_adicion?: number;
 }
 
 interface PagoParcial {
@@ -82,6 +84,7 @@ interface PedidoCocina {
   id: number;
   mesa_id: number;
   created_at: string;
+  updated_at?: string;
   estado_pedido: string;
   total: number;
   mesas: { nombre: string; numero: number };
@@ -90,6 +93,7 @@ interface PedidoCocina {
     cantidad: number;
     notas: string;
     es_adicion: boolean;
+    lote_adicion: number;
     precio_unitario: number;
     productos: { nombre: string };
   }[];
@@ -107,6 +111,15 @@ interface FiadoAcumulado {
   cliente: string;
   total: number;
   ventasIds: number[];
+}
+
+interface CustomAlertState {
+  show: boolean;
+  mensaje: string;
+  isConfirm?: boolean;
+  onConfirm?: () => void;
+  confirmText?: string;
+  cancelText?: string;
 }
 
 const formatCurrency = (amount: number | string | undefined | null) => {
@@ -143,7 +156,15 @@ export default function HomePOS() {
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [initialItemsCount, setInitialItemsCount] = useState<number>(0);
+  const [currentMaxLote, setCurrentMaxLote] = useState<number>(0);
   const [showMobileCart, setShowMobileCart] = useState(false);
+
+  // SELECCIÓN DE PRODUCTOS PARA PAGO PARCIAL
+  const [selectedCartItemKeys, setSelectedCartItemKeys] = useState<string[]>([]);
+  const [payAllProducts, setPayAllProducts] = useState<boolean>(true);
+
+  // HISTORIAL DE PRODUCTOS YA PAGADOS EN LA MESA
+  const [historialPagados, setHistorialPagados] = useState<{ nombre: string; cantidad: number; precio: number; fecha: string }[]>([]);
 
   const [showCheckout, setShowCheckout] = useState(false);
   const [discountInput, setDiscountInput] = useState<string>("0");
@@ -194,6 +215,35 @@ export default function HomePOS() {
 
   const [addedToast, setAddedToast] = useState<string | null>(null);
 
+  const [customAlert, setCustomAlert] = useState<CustomAlertState>({
+    show: false,
+    mensaje: "",
+    isConfirm: false
+  });
+
+  const triggerAlert = (mensaje: string) => {
+    setCustomAlert({
+      show: true,
+      mensaje,
+      isConfirm: false
+    });
+  };
+
+  const triggerConfirm = (mensaje: string, onConfirm: () => void, confirmText = "ACEPTAR", cancelText = "CANCELAR") => {
+    setCustomAlert({
+      show: true,
+      mensaje,
+      isConfirm: true,
+      onConfirm,
+      confirmText,
+      cancelText
+    });
+  };
+
+  const closeAlert = () => {
+    setCustomAlert({ show: false, mensaje: "", isConfirm: false });
+  };
+
   const categories = useMemo(() => {
     const cats = new Set(productos.map((p) => p.categoria).filter(Boolean));
     return ["Todos", ...Array.from(cats)];
@@ -227,7 +277,7 @@ export default function HomePOS() {
       .select("*, mesas!inner(nombre, numero, estado), pedido_items(*, productos(nombre))")
       .eq("estado", "abierto")
       .eq("estado_pedido", "pendiente_servir")
-      .order("id", { ascending: true });
+      .order("updated_at", { ascending: true });
 
     if (data) setPedidosCocina(data as any);
   };
@@ -260,6 +310,36 @@ export default function HomePOS() {
     }));
 
     setListaFiados(result);
+  };
+
+  // CONSULTAR HISTORIAL DE PRODUCTOS YA PAGADOS EN ESTE DÍA/MESA
+  const fetchHistorialPagosMesa = async (mesaId: number, cierreDiarioId?: number) => {
+    if (!cierreDiarioId) return;
+    const { data: ventasPrevias } = await supabase
+      .from("ventas")
+      .select("items_detalle, created_at")
+      .eq("mesa_id", mesaId)
+      .eq("cierre_diario_id", cierreDiarioId)
+      .order("created_at", { ascending: false });
+
+    if (ventasPrevias && ventasPrevias.length > 0) {
+      const historial: { nombre: string; cantidad: number; precio: number; fecha: string }[] = [];
+      ventasPrevias.forEach((v: any) => {
+        if (v.items_detalle && Array.isArray(v.items_detalle)) {
+          v.items_detalle.forEach((it: any) => {
+            historial.push({
+              nombre: it.nombre,
+              cantidad: it.cantidad,
+              precio: it.precio,
+              fecha: v.created_at
+            });
+          });
+        }
+      });
+      setHistorialPagados(historial);
+    } else {
+      setHistorialPagados([]);
+    }
   };
 
   useEffect(() => {
@@ -297,16 +377,16 @@ export default function HomePOS() {
       setNombreNuevoEspacio("");
       fetchData();
     } else {
-      alert("Error al crear el nuevo espacio: " + error.message);
+      triggerAlert("Error al crear el nuevo espacio: " + error.message);
     }
   };
 
   const handleEliminarMesaAdicional = async (mesaId: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm("¿Estás seguro de eliminar este espacio adicional?")) {
+    triggerConfirm("¿Estás seguro de eliminar este espacio adicional?", async () => {
       await supabase.from("mesas").delete().eq("id", mesaId);
       fetchData();
-    }
+    });
   };
 
   const handleOpenEditNombre = (mesa: Mesa, idx: number, e: React.MouseEvent) => {
@@ -341,14 +421,14 @@ export default function HomePOS() {
       setPinInput("");
       router.push("/admin");
     } else {
-      alert("⚠️ Clave de administrador incorrecta.");
+      triggerAlert("Clave de administrador incorrecta.");
       setPinInput("");
     }
   };
 
   const handleAbrirDia = async () => {
     const monto = parseCurrencyToNumber(montoInicialFormatted);
-    if (!nombreQuienAbre.trim()) return alert("Por favor ingresa el nombre de quien abre el día.");
+    if (!nombreQuienAbre.trim()) return triggerAlert("Por favor ingresa el nombre de quien abre el día.");
 
     const { data, error } = await supabase
       .from("cierres_diarios")
@@ -391,16 +471,16 @@ export default function HomePOS() {
         });
       } catch (_) {}
 
-      alert("✅ ¡Día abierto exitosamente!");
+      triggerAlert("¡Día abierto exitosamente!");
     } else {
       console.error("Error al abrir día:", error);
-      alert("Error al abrir el día: " + (error?.message || "Verifica permisos de Supabase."));
+      triggerAlert("Error al abrir el día: " + (error?.message || "Verifica permisos de Supabase."));
     }
   };
 
   const handleAddGastoInsumos = async () => {
-    if (!cierreActivo) return alert("Debes abrir el día primero.");
-    if (!gastoDesc.trim() || !gastoMonto) return alert("Completa los campos del gasto.");
+    if (!cierreActivo) return triggerAlert("Debes abrir el día primero.");
+    if (!gastoDesc.trim() || !gastoMonto) return triggerAlert("Completa los campos del gasto.");
     const montoVal = parseCurrencyToNumber(gastoMonto);
     const hoy = new Date().toISOString().split("T")[0];
 
@@ -416,14 +496,14 @@ export default function HomePOS() {
     setGastoMonto("");
     setShowGastoModal(false);
     setShowHeaderMenu(false);
-    alert("✅ Gasto de insumos guardado correctamente.");
+    triggerAlert("Gasto de insumos guardado correctamente.");
   };
 
   const handleSaldarFiadoCliente = async (cliente: string) => {
-    if (confirm(`¿Confirmas que ${cliente} ha cancelado la totalidad de su deuda fiada?`)) {
-      alert(`✅ Deuda de ${cliente} saldada correctamente.`);
+    triggerConfirm(`¿Confirmas que ${cliente} ha cancelado la totalidad de su deuda fiada?`, () => {
+      triggerAlert(`Deuda de ${cliente} saldada correctamente.`);
       fetchFiadosPendientes();
-    }
+    });
   };
 
   const calcularTotalesTurno = async () => {
@@ -480,7 +560,7 @@ export default function HomePOS() {
 
   const handleOpenCierreModal = async () => {
     if (!cierreActivo) {
-      alert("⚠️ No hay un día abierto actualmente. Abre el día primero.");
+      triggerAlert("No hay un día abierto actualmente. Abre el día primero.");
       return;
     }
     const res = await calcularTotalesTurno();
@@ -497,9 +577,10 @@ export default function HomePOS() {
     if (valorIngresado !== res.totalCajaEsperado) {
       const dif = valorIngresado - res.totalCajaEsperado;
       const tipo = dif > 0 ? "mayor" : "menor";
-      if (confirm(`⚠️ El dinero ingresado ($${formatCurrency(valorIngresado)}) es ${tipo} al esperado ($${formatCurrency(res.totalCajaEsperado)}). ¿Deseas ingresar la razón de la diferencia?`)) {
-        setShowRazonModal(true);
-      }
+      triggerConfirm(
+        `El dinero ingresado ($${formatCurrency(valorIngresado)}) es ${tipo} al esperado ($${formatCurrency(res.totalCajaEsperado)}). ¿Deseas ingresar la razón de la diferencia?`,
+        () => setShowRazonModal(true)
+      );
     } else {
       finalizarCierreDia(valorIngresado, 0, "");
     }
@@ -533,7 +614,7 @@ export default function HomePOS() {
       .eq("id", cierreActivo.id);
 
     if (error) {
-      alert("Error al finalizar el cierre de día: " + error.message);
+      triggerAlert("Error al finalizar el cierre de día: " + error.message);
       return;
     }
 
@@ -552,69 +633,103 @@ export default function HomePOS() {
     setRazonDiferencia("");
     setMontoCobroTurnoInput("");
     setNombreEmpleadoTurno("");
-    alert("🎉 ¡Cierre de día guardado con éxito!");
+    triggerAlert("¡Cierre de día guardado con éxito!");
   };
 
- const handleSelectMesa = async (mesa: Mesa) => {
-  if (vista === "caja" && mesa.estado === "libre") return;
+  const handleSelectMesa = async (mesa: Mesa) => {
+    if (vista === "caja" && mesa.estado === "libre") return;
 
-  setSelectedMesa(mesa);
-  setCart([]);
-  setInitialItemsCount(0);
-  setShowCheckout(false);
-  setSaleCompleted(false);
-  setShowMobileCart(false);
-  setPagos([]);
-  setMontoIngresado("");
-  setEfectivoRecibido("");
-  setClienteFiado("");
+    setSelectedMesa(mesa);
+    setCart([]);
+    setInitialItemsCount(0);
+    setCurrentMaxLote(0);
+    setShowCheckout(false);
+    setSaleCompleted(false);
+    setShowMobileCart(false);
+    setPagos([]);
+    setMontoIngresado("");
+    setEfectivoRecibido("");
+    setClienteFiado("");
 
-  const { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", mesa.id).eq("estado", "abierto").single();
+    // Consultar historial de pagos ya realizados en esta mesa
+    fetchHistorialPagosMesa(mesa.id, cierreActivo?.id);
 
-  if (pedido) {
-    const { data: items } = await supabase.from("pedido_items").select("*, productos(*)").eq("pedido_id", pedido.id);
-    if (items && items.length > 0) {
-      const loadedCart: CartItem[] = items.map((it: any) => ({
-        producto: it.productos,
-        cantidad: it.cantidad,
-        notas: it.notas || "",
-        es_adicion: it.es_adicion || false,
-      }));
-      setCart(loadedCart);
-      // Guardamos la cantidad exacta de ítems que ya estaban registrados en cocina previamente
-      const totalExistentes = loadedCart.reduce((acc, i) => acc + i.cantidad, 0);
-      setInitialItemsCount(totalExistentes);
+    const { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", mesa.id).eq("estado", "abierto").maybeSingle();
+
+    if (pedido) {
+      const { data: items } = await supabase.from("pedido_items").select("*, productos(*)").eq("pedido_id", pedido.id);
+      if (items && items.length > 0) {
+        const maxLote = Math.max(...items.map((it: any) => it.lote_adicion || 0));
+        setCurrentMaxLote(maxLote);
+
+        const loadedCart: CartItem[] = items.map((it: any) => ({
+          producto: it.productos,
+          cantidad: it.cantidad,
+          notas: it.notas || "",
+          es_adicion: it.es_adicion || false,
+          lote_adicion: it.lote_adicion || 0,
+        }));
+        setCart(loadedCart);
+
+        const totalExistentes = loadedCart.reduce((acc, i) => acc + i.cantidad, 0);
+        setInitialItemsCount(totalExistentes);
+
+        setPayAllProducts(true);
+        const allKeys = loadedCart.map((it, i) => `${it.producto.id}-${it.lote_adicion || 0}-${i}`);
+        setSelectedCartItemKeys(allKeys);
+      }
     }
-  }
 
-  if (vista === "caja" && mesa.estado !== "libre") {
-    setShowCheckout(true);
-  }
-};
-
- const addToCart = (producto: Producto) => {
-  if (vista === "caja") return;
-  
-  setAddedToast(`+1 ${producto.nombre}`);
-  setTimeout(() => setAddedToast(null), 1400);
-
-  setCart((prev) => {
-    // Si ya hay un pedido cargado en la mesa, todo lo nuevo que se agregue ahora TIENE que ser adición (es_adicion: true)
-    // Si la mesa estaba libre (initialItemsCount === 0), es un pedido nuevo normal (es_adicion: false)
-    const esAdicion = initialItemsCount > 0;
-    
-    const existing = prev.find((item) => item.producto.id === producto.id && item.es_adicion === esAdicion);
-    if (existing) {
-      return prev.map((item) => item.producto.id === producto.id && item.es_adicion === esAdicion ? { ...item, cantidad: item.cantidad + 1 } : item);
+    if (vista === "caja" && mesa.estado !== "libre") {
+      setShowCheckout(true);
     }
-    return [...prev, { producto, cantidad: 1, es_adicion: esAdicion }];
-  });
-};
-  const updateQuantity = (productoId: number, delta: number, esAdicion: boolean = false) => {
+  };
+
+  const handleCardClick = (mesa: Mesa, e: React.MouseEvent) => {
+    if (vista === "caja") {
+      if (mesa.estado !== "libre") handleSelectMesa(mesa);
+      return;
+    }
+
+    if (mesa.estado === "preparado") {
+      handleEntregarAMesa(mesa.id, e);
+    } else {
+      handleSelectMesa(mesa);
+    }
+  };
+
+  const addToCart = (producto: Producto) => {
+    if (vista === "caja" || !selectedMesa) return;
+
+    setAddedToast(`+1 ${producto.nombre}`);
+    setTimeout(() => setAddedToast(null), 1400);
+
+    const mesaEntregada = selectedMesa.estado === "servido";
+
+    setCart((prev) => {
+      const esAdicion = mesaEntregada && initialItemsCount > 0;
+      const nuevoLote = esAdicion ? currentMaxLote + 1 : currentMaxLote;
+
+      const existing = prev.find(
+        (item) => item.producto.id === producto.id && (item.lote_adicion || 0) === nuevoLote
+      );
+
+      if (existing) {
+        return prev.map((item) =>
+          item.producto.id === producto.id && (item.lote_adicion || 0) === nuevoLote
+            ? { ...item, cantidad: item.cantidad + 1 }
+            : item
+        );
+      }
+      return [...prev, { producto, cantidad: 1, es_adicion: esAdicion, lote_adicion: nuevoLote }];
+    });
+  };
+
+  const updateQuantity = (productoId: number, delta: number, loteAdicion: number = 0) => {
     if (vista === "caja") return;
     setCart((prev) =>
       prev.map((item) => {
-        if (item.producto.id === productoId && item.es_adicion === esAdicion) {
+        if (item.producto.id === productoId && (item.lote_adicion || 0) === loteAdicion) {
           const newQty = item.cantidad + delta;
           return newQty > 0 ? { ...item, cantidad: newQty } : null;
         }
@@ -623,7 +738,16 @@ export default function HomePOS() {
     );
   };
 
-  const subtotalAmount = useMemo(() => cart.reduce((acc, item) => acc + item.producto.precio * item.cantidad, 0), [cart]);
+  const getItemKey = (item: CartItem, idx: number) => `${item.producto.id}-${item.lote_adicion || 0}-${idx}`;
+
+  const itemsToPay = useMemo(() => {
+    if (payAllProducts) return cart;
+    return cart.filter((item, idx) => selectedCartItemKeys.includes(getItemKey(item, idx)));
+  }, [cart, payAllProducts, selectedCartItemKeys]);
+
+  const subtotalAmount = useMemo(() => {
+    return itemsToPay.reduce((acc, item) => acc + item.producto.precio * item.cantidad, 0);
+  }, [itemsToPay]);
 
   const discountVal = useMemo(() => {
     const val = parseCurrencyToNumber(discountInput);
@@ -633,6 +757,19 @@ export default function HomePOS() {
   const finalTotal = useMemo(() => Math.max(0, subtotalAmount - discountVal), [subtotalAmount, discountVal]);
   const totalPagado = useMemo(() => pagos.reduce((acc, p) => acc + p.monto, 0), [pagos]);
   const saldoPendiente = useMemo(() => Math.max(0, finalTotal - totalPagado), [finalTotal, totalPagado]);
+
+  const toggleSelectItem = (key: string) => {
+    setPayAllProducts(false);
+    setSelectedCartItemKeys((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+    );
+  };
+
+  const handleSelectAllProducts = () => {
+    setPayAllProducts(true);
+    const allKeys = cart.map((it, i) => getItemKey(it, i));
+    setSelectedCartItemKeys(allKeys);
+  };
 
   useEffect(() => {
     if (showCheckout) {
@@ -658,15 +795,15 @@ export default function HomePOS() {
 
   const handleAgregarPago = () => {
     const monto = parseCurrencyToNumber(montoIngresado);
-    if (!monto || monto <= 0) return alert("Ingresa un monto válido a pagar.");
+    if (!monto || monto <= 0) return triggerAlert("Ingresa un monto válido a pagar.");
 
     if (currentMetodo === "efectivo") {
       const recibido = parseCurrencyToNumber(efectivoRecibido);
-      if (recibido < monto) return alert("El dinero recibido en efectivo es menor al monto asignado.");
+      if (recibido < monto) return triggerAlert("El dinero recibido en efectivo es menor al monto asignado.");
       const cambio = recibido - monto;
       setPagos((prev) => [...prev, { metodo: "efectivo", monto, montoEntregadoEfectivo: recibido, cambioEfectivo: cambio }]);
     } else if (currentMetodo === "fiado") {
-      if (!clienteFiado.trim()) return alert("Debes indicar el nombre de la persona a la que le vas a fiar.");
+      if (!clienteFiado.trim()) return triggerAlert("Debes indicar el nombre de la persona a la que le vas a fiar.");
       setPagos((prev) => [...prev, { metodo: "fiado", monto, clienteFiado: clienteFiado.trim() }]);
     } else {
       setPagos((prev) => [...prev, { metodo: currentMetodo, monto }]);
@@ -680,66 +817,82 @@ export default function HomePOS() {
     setPagos((prev) => prev.filter((_, i) => i !== index));
   };
 
- const handleSaveOrder = async () => {
-  if (!selectedMesa || vista === "caja") return;
+  const handleSaveOrder = async () => {
+    if (!selectedMesa || vista === "caja") return;
 
-  if (!cierreActivo) {
-    setShowAperturaRequeridaModal(true);
-    return;
-  }
-
-  // Descontar stock solo de los nuevos ítems agregados
-  const itemsNuevos = cart.filter(item => item.es_adicion);
-
-  for (const item of itemsNuevos) {
-    if (item.producto.id) {
-      const stockActual = item.producto.stock ?? 50;
-      const nuevoStock = Math.max(0, stockActual - item.cantidad);
-      await supabase
-        .from("productos")
-        .update({ stock: nuevoStock, disponible: nuevoStock > 0 })
-        .eq("id", item.producto.id);
+    if (!cierreActivo) {
+      setShowAperturaRequeridaModal(true);
+      return;
     }
-  }
 
-  await supabase.from("mesas").update({ estado: "pendiente_servir" }).eq("id", selectedMesa.id);
+    const itemsNuevos = cart.filter((item) => item.es_adicion);
 
-  let { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", selectedMesa.id).eq("estado", "abierto").single();
+    for (const item of itemsNuevos) {
+      if (item.producto.id) {
+        const stockActual = item.producto.stock ?? 50;
+        const nuevoStock = Math.max(0, stockActual - item.cantidad);
+        await supabase
+          .from("productos")
+          .update({ stock: nuevoStock, disponible: nuevoStock > 0 })
+          .eq("id", item.producto.id);
+      }
+    }
 
-  if (!pedido) {
-    const { data: newPedido } = await supabase
+    await supabase.from("mesas").update({ estado: "pendiente_servir" }).eq("id", selectedMesa.id);
+
+    let { data: pedido } = await supabase
       .from("pedidos")
-      .insert({ mesa_id: selectedMesa.id, total: subtotalAmount, estado: "abierto", estado_pedido: "pendiente_servir" })
-      .select().single();
-    pedido = newPedido;
-  } else {
-    await supabase.from("pedidos").update({ total: subtotalAmount, estado_pedido: "pendiente_servir" }).eq("id", pedido.id);
-  }
+      .select("id")
+      .eq("mesa_id", selectedMesa.id)
+      .eq("estado", "abierto")
+      .maybeSingle();
 
-  if (pedido && cart.length > 0) {
-    // En lugar de borrar todo, actualizamos o insertamos manteniendo los IDs anteriores si ya existían,
-    // o simplemente insertamos los nuevos items que tengan es_adicion: true.
-    // Para asegurar que los antiguos conserven su estado y los nuevos entren como adición:
-    const itemsToInsert = cart.map((item) => ({
-      pedido_id: pedido.id,
-      producto_id: item.producto.id,
-      cantidad: item.cantidad,
-      precio_unitario: item.producto.precio,
-      es_adicion: item.es_adicion || false,
-    }));
+    const nowIso = new Date().toISOString();
 
-    // Reemplazamos los ítems del pedido manteniendo la distinción exacta
-    await supabase.from("pedido_items").delete().eq("pedido_id", pedido.id);
-    await supabase.from("pedido_items").insert(itemsToInsert);
-  }
+    if (!pedido) {
+      const { data: newPedido } = await supabase
+        .from("pedidos")
+        .insert({
+          mesa_id: selectedMesa.id,
+          total: subtotalAmount,
+          estado: "abierto",
+          estado_pedido: "pendiente_servir",
+          updated_at: nowIso,
+        })
+        .select()
+        .single();
+      pedido = newPedido;
+    } else {
+      await supabase
+        .from("pedidos")
+        .update({
+          total: subtotalAmount,
+          estado_pedido: "pendiente_servir",
+          updated_at: nowIso,
+        })
+        .eq("id", pedido.id);
+    }
 
-  fetchData();
-  setSelectedMesa(null);
-};
-  
+    if (pedido && cart.length > 0) {
+      const itemsToInsert = cart.map((item) => ({
+        pedido_id: pedido.id,
+        producto_id: item.producto.id,
+        cantidad: item.cantidad,
+        precio_unitario: item.producto.precio,
+        es_adicion: item.es_adicion || false,
+        lote_adicion: item.lote_adicion || 0,
+      }));
 
-  const handleEntregarAMesa = async (mesaId: number, e: React.MouseEvent) => {
-    e.stopPropagation();
+      await supabase.from("pedido_items").delete().eq("pedido_id", pedido.id);
+      await supabase.from("pedido_items").insert(itemsToInsert);
+    }
+
+    fetchData();
+    setSelectedMesa(null);
+  };
+
+  const handleEntregarAMesa = async (mesaId: number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     await supabase.from("mesas").update({ estado: "servido" }).eq("id", mesaId);
     await supabase.from("pedidos").update({ estado_pedido: "servido" }).eq("mesa_id", mesaId).eq("estado", "abierto");
     fetchData();
@@ -752,20 +905,20 @@ export default function HomePOS() {
   };
 
   const handleCancelarComanda = async (pedidoId: number, mesaId: number) => {
-    if (confirm("¿Estás seguro de eliminar/cancelar esta comanda? La mesa quedará libre.")) {
+    triggerConfirm("¿Estás seguro de eliminar/cancelar esta comanda? La mesa quedará libre.", async () => {
       await supabase.from("pedido_items").delete().eq("pedido_id", pedidoId);
       await supabase.from("pedidos").delete().eq("id", pedidoId);
       await supabase.from("mesas").update({ estado: "libre" }).eq("id", mesaId);
       fetchData();
-    }
+    });
   };
 
   const handleFinalizeSale = async () => {
-    if (!selectedMesa) return;
-    if (!cierreActivo) return alert("⚠️ Se requiere un día abierto para finalizar ventas.");
-    if (saldoPendiente > 0) return alert(`No se puede liberar la mesa. Aún hay un saldo pendiente de $${formatCurrency(saldoPendiente)}`);
+    if (!selectedMesa || itemsToPay.length === 0) return;
+    if (!cierreActivo) return triggerAlert("Se requiere un día abierto para finalizar ventas.");
+    if (saldoPendiente > 0) return triggerAlert(`No se puede procesar el cobro. Aún hay un saldo pendiente de $${formatCurrency(saldoPendiente)}`);
 
-    const itemsSummary = cart.map((i) => ({ nombre: i.producto.nombre, cantidad: i.cantidad, precio: i.producto.precio }));
+    const itemsSummary = itemsToPay.map((i) => ({ nombre: i.producto.nombre, cantidad: i.cantidad, precio: i.producto.precio }));
     const fiadoItem = pagos.find((p) => p.metodo === "fiado");
 
     await supabase.from("ventas").insert({
@@ -781,11 +934,29 @@ export default function HomePOS() {
       items_detalle: itemsSummary,
     });
 
-    const idxMesa = mesas.findIndex((m) => m.id === selectedMesa.id);
-    const nombreOriginal = idxMesa !== -1 ? getNombreOriginal(selectedMesa.numero, idxMesa) : selectedMesa.nombre;
+    const remainingCart = cart.filter((item, idx) => !selectedCartItemKeys.includes(getItemKey(item, idx)));
 
-    await supabase.from("pedidos").update({ estado: "pagado", estado_pedido: "servido" }).eq("mesa_id", selectedMesa.id).eq("estado", "abierto");
-    await supabase.from("mesas").update({ estado: "libre", nombre: nombreOriginal }).eq("id", selectedMesa.id);
+    if (remainingCart.length === 0 || payAllProducts) {
+      const idxMesa = mesas.findIndex((m) => m.id === selectedMesa.id);
+      const nombreOriginal = idxMesa !== -1 ? getNombreOriginal(selectedMesa.numero, idxMesa) : selectedMesa.nombre;
+
+      await supabase.from("pedidos").update({ estado: "pagado", estado_pedido: "servido" }).eq("mesa_id", selectedMesa.id).eq("estado", "abierto");
+      await supabase.from("mesas").update({ estado: "libre", nombre: nombreOriginal }).eq("id", selectedMesa.id);
+    } else {
+      const { data: pedido } = await supabase.from("pedidos").select("id").eq("mesa_id", selectedMesa.id).eq("estado", "abierto").single();
+      if (pedido) {
+        const itemsToKeep = remainingCart.map((item) => ({
+          pedido_id: pedido.id,
+          producto_id: item.producto.id,
+          cantidad: item.cantidad,
+          precio_unitario: item.producto.precio,
+          es_adicion: item.es_adicion || false,
+          lote_adicion: item.lote_adicion || 0,
+        }));
+        await supabase.from("pedido_items").delete().eq("pedido_id", pedido.id);
+        await supabase.from("pedido_items").insert(itemsToKeep);
+      }
+    }
 
     setSaleCompleted(true);
     fetchData();
@@ -796,9 +967,6 @@ export default function HomePOS() {
     const matchesSearch = p.nombre.toLowerCase().includes(searchQuery.toLowerCase());
     return matchesCat && matchesSearch;
   });
-
-  const cartIniciales = useMemo(() => cart.filter((i) => !i.es_adicion), [cart]);
-  const cartAdiciones = useMemo(() => cart.filter((i) => i.es_adicion), [cart]);
 
   const mesasPrincipales = useMemo(() => mesas.slice(0, 7), [mesas]);
   const mesasAdicionales = useMemo(() => mesas.slice(7), [mesas]);
@@ -866,7 +1034,6 @@ export default function HomePOS() {
             <ShieldCheck className="w-4 h-4" /> ADMIN
           </button>
 
-          {/* MENÚ DE 3 PUNTOS CON 4 OPCIONES */}
           <div className="relative">
             <button
               onClick={() => setShowHeaderMenu(!showHeaderMenu)}
@@ -926,69 +1093,129 @@ export default function HomePOS() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-             {pedidosCocina.map((p) => {
-  // Agrupamos items por número de adición (es_adicion es booleano, 
-  // si tu BD solo tiene ese booleano, podemos inferirlo del ID o timestamp si fuera necesario, 
-  // pero aquí mantendré la lógica de "entregados" vs "nuevos")
-  const items = p.pedido_items || [];
-  
-  // Lógica: Si el ítem ya fue marcado en una instancia previa, está "entregado".
-  // Para que esto persista, al dar "LISTO", el estado debe cambiar globalmente.
-  // Aquí los separamos visualmente por su estado de "preparación"
-  const itemsPorProcesar = items.filter(it => it.es_adicion); 
-  const itemsYaServidos = items.filter(it => !it.es_adicion);
+              {pedidosCocina.map((p, index) => {
+                const items = p.pedido_items || [];
 
-  return (
-    <div key={p.id} className="bg-slate-900 border-2 border-amber-500/60 p-6 rounded-3xl flex flex-col justify-between shadow-2xl relative">
-      <div>
-        <div className="flex justify-between items-center pb-3 border-b border-slate-800 pr-8">
-          <h3 className="font-black text-xl text-white">{p.mesas?.nombre}</h3>
-          <span className="text-xs font-mono text-slate-400 bg-slate-950 px-2 py-1 rounded-lg">
-            {new Date(p.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-          </span>
-        </div>
+                const lotesMap: { [key: number]: typeof items } = {};
+                items.forEach((it) => {
+                  const lote = it.lote_adicion || 0;
+                  if (!lotesMap[lote]) lotesMap[lote] = [];
+                  lotesMap[lote].push(it);
+                });
 
-        <div className="my-5 space-y-4">
-          {/* SECCIÓN VERDE: Lo que ya se preparó */}
-          {itemsYaServidos.length > 0 && (
-            <div className="space-y-1">
-              <span className="text-[9px] font-black uppercase text-emerald-400">✅ Preparado (Histórico)</span>
-              {itemsYaServidos.map((it) => (
-                <div key={it.id} className="flex justify-between items-center text-xs font-bold p-2 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-300">
-                  <span>{it.cantidad}x {it.productos?.nombre}</span>
-                </div>
-              ))}
-            </div>
-          )}
+                const lotesOrdenados = Object.keys(lotesMap)
+                  .map(Number)
+                  .sort((a, b) => b - a);
 
-          {/* SECCIÓN ROJA: Nuevas adiciones numeradas */}
-          {itemsPorProcesar.length > 0 && (
-            <div className="space-y-1">
-              <span className="text-[9px] font-black uppercase text-rose-500">🚨 Nueva Adición (Pendiente)</span>
-              {itemsPorProcesar.map((it, idx) => (
-                <div key={it.id} className="flex justify-between items-center text-sm font-black p-3 rounded-xl bg-rose-950/40 border border-rose-500 text-rose-200">
-                  <span className="flex items-center gap-2">
-                    <span className="bg-rose-500 text-white w-5 h-5 flex items-center justify-center rounded-full text-[10px]">
-                      {idx + 1}
-                    </span>
-                    {it.cantidad}x {it.productos?.nombre}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+                const ultimoLote = lotesOrdenados.length > 0 ? Math.max(...lotesOrdenados) : 0;
+                const itemsNuevos = lotesMap[ultimoLote] || [];
+                const lotesEntregados = lotesOrdenados.filter((l) => l !== ultimoLote);
 
-      <button
-        onClick={() => handleCocinaListo(p.id, p.mesa_id)}
-        className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-sm uppercase rounded-2xl cursor-pointer flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.4)]"
-      >
-        <Check className="w-5 h-5" /> MARCAR LISTO (TODO)
-      </button>
-    </div>
-  );
-})}
+                return (
+                  <div
+                    key={p.id}
+                    className="bg-slate-900 border-2 border-amber-500/60 p-6 rounded-3xl flex flex-col justify-between shadow-2xl relative"
+                  >
+                    <div className="space-y-4">
+                      <div className="flex justify-between items-center pb-3 border-b border-slate-800">
+                        <div className="flex items-center gap-2">
+                          <span className="bg-amber-500 text-slate-950 font-black px-2.5 py-1 rounded-xl text-xs">
+                            #{index + 1}
+                          </span>
+                          <div>
+                            <h3 className="font-black text-xl text-white leading-none">{p.mesas?.nombre}</h3>
+                            <span className="text-[12px] font-mono text-emerald-400 font-bold">
+                              TOTAL: ${formatCurrency(p.total)}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono text-slate-400 bg-slate-950 px-2 py-1 rounded-lg">
+                            {new Date(p.updated_at || p.created_at).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+
+                          <button
+                            onClick={() => handleCancelarComanda(p.id, p.mesa_id)}
+                            className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white border border-rose-500/30 transition-all cursor-pointer"
+                            title="Liberar Mesa / Cancelar Comanda"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md inline-block bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse">
+                          🚨 {ultimoLote === 0 ? "PEDIDO INICIAL A COCINAR" : `ADICIÓN #${ultimoLote} (NUEVO)`}
+                        </span>
+
+                        <div className="space-y-2">
+                          {itemsNuevos.map((it) => (
+                            <div
+                              key={it.id}
+                              className="flex justify-between items-center text-xs font-black p-3 rounded-xl border bg-rose-950/40 border-rose-500/60 text-rose-100 shadow-md"
+                            >
+                              <span className="text-sm">
+                                {it.cantidad}x {it.productos?.nombre}
+                              </span>
+                              {it.notas && (
+                                <span className="text-[10px] text-amber-300 italic">
+                                  ({it.notas})
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {lotesEntregados.length > 0 && (
+                        <div className="pt-3 border-t border-slate-800/80 space-y-2">
+                          <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">
+                            ✓ Historial Entregado
+                          </span>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            {lotesEntregados.map((numLote) => {
+                              const esInicial = numLote === 0;
+                              const itemsLote = lotesMap[numLote];
+
+                              return (
+                                <div
+                                  key={numLote}
+                                  className="bg-slate-950/80 border border-slate-800/90 rounded-2xl p-2.5 space-y-1.5 flex flex-col justify-between"
+                                >
+                                  <span className="text-[9px] font-black uppercase text-slate-400 block border-b border-slate-800/60 pb-1">
+                                    {esInicial ? "📋 Pedido Inicial" : `Adición #${numLote}`}
+                                  </span>
+
+                                  <div className="space-y-1">
+                                    {itemsLote.map((it) => (
+                                      <div key={it.id} className="text-[11px] font-bold text-slate-300/80 leading-tight">
+                                        {it.cantidad}x {it.productos?.nombre}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={() => handleCocinaListo(p.id, p.mesa_id)}
+                      className="w-full mt-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-sm uppercase rounded-2xl cursor-pointer flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.4)]"
+                    >
+                      <Check className="w-5 h-5" /> MARCAR TODO LISTO
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </main>
@@ -1046,7 +1273,7 @@ export default function HomePOS() {
                   return (
                     <div
                       key={mesa.id}
-                      onClick={() => handleSelectMesa(mesa)}
+                      onClick={(e) => handleCardClick(mesa, e)}
                       className={`group relative rounded-3xl p-5 border-2 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between h-64 sm:h-72 shadow-2xl ${
                         isLibre
                           ? "bg-emerald-950/30 border-emerald-500/70 hover:border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.25)] hover:shadow-[0_0_30px_rgba(16,185,129,0.4)]"
@@ -1118,32 +1345,27 @@ export default function HomePOS() {
 
                       <div className="pt-2 border-t border-slate-800/80 z-10">
                         {vista === "caja" ? (
-                          <button
-                            className={`w-full py-2 font-black text-xs uppercase rounded-xl border flex items-center justify-center gap-1.5 transition-all ${
-                              isLibre
-                                ? "bg-slate-950 text-slate-600 border-slate-800/80 cursor-not-allowed"
-                                : "bg-pink-500/20 text-pink-300 border-pink-500/50 hover:bg-pink-500 hover:text-white shadow-[0_0_15px_rgba(236,72,153,0.3)] active:scale-95 cursor-pointer"
-                            }`}
-                          >
+                          <div className={`w-full py-2 font-black text-xs uppercase rounded-xl border flex items-center justify-center gap-1.5 transition-all ${
+                            isLibre
+                              ? "bg-slate-950 text-slate-600 border-slate-800/80 cursor-not-allowed"
+                              : "bg-pink-500/20 text-pink-300 border-pink-500/50 shadow-[0_0_15px_rgba(236,72,153,0.3)]"
+                          }`}>
                             <CreditCard className="w-3.5 h-3.5" />
                             {isLibre ? "Disponible" : "Cobrar Mesa"}
-                          </button>
+                          </div>
                         ) : (
                           <div>
                             {isPreparado ? (
-                              <button
-                                onClick={(e) => handleEntregarAMesa(mesa.id, e)}
-                                className="w-full py-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs uppercase rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.5)] flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
-                              >
+                              <div className="w-full py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black text-xs uppercase rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.5)] flex items-center justify-center gap-1.5 transition-all">
                                 <Send className="w-3.5 h-3.5" /> Entregar
-                              </button>
+                              </div>
                             ) : (
                               <div className={`text-[11px] font-black uppercase text-center py-1.5 rounded-xl border flex items-center justify-center gap-1.5 transition-all ${
                                 isLibre 
-                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 group-hover:bg-emerald-500 group-hover:text-slate-950" 
+                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" 
                                   : isServido 
-                                  ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30 group-hover:bg-cyan-500 group-hover:text-slate-950"
-                                  : "bg-orange-500/10 text-orange-300 border-orange-500/30 group-hover:bg-orange-500 group-hover:text-slate-950"
+                                  ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30"
+                                  : "bg-orange-500/10 text-orange-300 border-orange-500/30"
                               }`}>
                                 {isLibre ? (
                                   <><Plus className="w-3.5 h-3.5" /> Tomar Pedido</>
@@ -1189,7 +1411,7 @@ export default function HomePOS() {
                   return (
                     <div
                       key={mesa.id}
-                      onClick={() => handleSelectMesa(mesa)}
+                      onClick={(e) => handleCardClick(mesa, e)}
                       className={`group relative rounded-3xl p-5 border-2 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between h-64 sm:h-72 shadow-2xl ${
                         isLibre
                           ? "bg-emerald-950/30 border-emerald-500/70 hover:border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.25)] hover:shadow-[0_0_30px_rgba(16,185,129,0.4)]"
@@ -1261,32 +1483,27 @@ export default function HomePOS() {
 
                       <div className="pt-2 border-t border-slate-800/80 z-10">
                         {vista === "caja" ? (
-                          <button
-                            className={`w-full py-2 font-black text-xs uppercase rounded-xl border flex items-center justify-center gap-1.5 transition-all ${
-                              isLibre
-                                ? "bg-slate-950 text-slate-600 border-slate-800/80 cursor-not-allowed"
-                                : "bg-pink-500/20 text-pink-300 border-pink-500/50 hover:bg-pink-500 hover:text-white shadow-[0_0_15px_rgba(236,72,153,0.3)] active:scale-95 cursor-pointer"
-                            }`}
-                          >
+                          <div className={`w-full py-2 font-black text-xs uppercase rounded-xl border flex items-center justify-center gap-1.5 transition-all ${
+                            isLibre
+                              ? "bg-slate-950 text-slate-600 border-slate-800/80 cursor-not-allowed"
+                              : "bg-pink-500/20 text-pink-300 border-pink-500/50 shadow-[0_0_15px_rgba(236,72,153,0.3)]"
+                          }`}>
                             <CreditCard className="w-3.5 h-3.5" />
                             {isLibre ? "Disponible" : "Cobrar Mesa"}
-                          </button>
+                          </div>
                         ) : (
                           <div>
                             {isPreparado ? (
-                              <button
-                                onClick={(e) => handleEntregarAMesa(mesa.id, e)}
-                                className="w-full py-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs uppercase rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.5)] flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
-                              >
+                              <div className="w-full py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black text-xs uppercase rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.5)] flex items-center justify-center gap-1.5 transition-all">
                                 <Send className="w-3.5 h-3.5" /> Entregar
-                              </button>
+                              </div>
                             ) : (
                               <div className={`text-[11px] font-black uppercase text-center py-1.5 rounded-xl border flex items-center justify-center gap-1.5 transition-all ${
                                 isLibre 
-                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 group-hover:bg-emerald-500 group-hover:text-slate-950" 
+                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" 
                                   : isServido 
-                                  ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30 group-hover:bg-cyan-500 group-hover:text-slate-950"
-                                  : "bg-orange-500/10 text-orange-300 border-orange-500/30 group-hover:bg-orange-500 group-hover:text-slate-950"
+                                  ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30"
+                                  : "bg-orange-500/10 text-orange-300 border-orange-500/30"
                               }`}>
                                 {isLibre ? (
                                   <><Plus className="w-3.5 h-3.5" /> Tomar Pedido</>
@@ -1434,19 +1651,23 @@ export default function HomePOS() {
                         <p className="text-xs text-slate-500 font-bold py-4 text-center">No hay productos añadidos</p>
                       ) : (
                         cart.map((item, idx) => (
-                          <div key={`${item.producto.id}-${item.es_adicion ? "adicion" : "normal"}-${idx}`} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between">
+                          <div key={`${item.producto.id}-${item.lote_adicion || 0}-${idx}`} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between">
                             <div>
                               <h5 className="font-black text-xs text-slate-100 flex items-center gap-1.5">
                                 {item.producto.nombre}
-                                {item.es_adicion && <span className="text-[8px] bg-rose-500/20 text-rose-400 border border-rose-500/40 px-1 py-0.2 rounded font-bold">ADICIÓN</span>}
+                                {item.es_adicion && (
+                                  <span className="text-[8px] bg-rose-500/20 text-rose-400 border border-rose-500/40 px-1 py-0.2 rounded font-bold">
+                                    ADICIÓN #{item.lote_adicion || 1}
+                                  </span>
+                                )}
                               </h5>
                               <p className="text-[10px] text-slate-400 font-mono">${formatCurrency(item.producto.precio)}</p>
                             </div>
                             {vista === "mesero" ? (
                               <div className="flex items-center gap-2">
-                                <button onClick={() => updateQuantity(item.producto.id, -1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black flex items-center justify-center cursor-pointer"><Minus className="w-3 h-3" /></button>
+                                <button onClick={() => updateQuantity(item.producto.id, -1, item.lote_adicion || 0)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black flex items-center justify-center cursor-pointer"><Minus className="w-3 h-3" /></button>
                                 <span className="font-black text-xs text-white">{item.cantidad}</span>
-                                <button onClick={() => updateQuantity(item.producto.id, 1, item.es_adicion)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black flex items-center justify-center cursor-pointer"><Plus className="w-3 h-3" /></button>
+                                <button onClick={() => updateQuantity(item.producto.id, 1, item.lote_adicion || 0)} className="w-6 h-6 rounded-lg bg-slate-800 text-white font-black flex items-center justify-center cursor-pointer"><Plus className="w-3 h-3" /></button>
                               </div>
                             ) : (
                               <span className="font-black text-xs text-slate-300">x{item.cantidad}</span>
@@ -1943,7 +2164,7 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL COBRO EN CAJA */}
+      {/* MODAL COBRO EN CAJA CON HISTORIAL DE PRODUCTOS YA PAGADOS */}
       {showCheckout && selectedMesa && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-lg w-full shadow-2xl relative max-h-[90vh] overflow-y-auto">
@@ -1958,38 +2179,83 @@ export default function HomePOS() {
                   </button>
                 </div>
 
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-3 max-h-48 overflow-y-auto pr-1">
-                  {cartIniciales.length > 0 && (
-                    <div>
-                      <h4 className="text-[10px] font-black text-slate-400 uppercase mb-1.5 flex items-center gap-1">
-                        🛒 Productos Pedidos:
-                      </h4>
-                      <div className="space-y-1">
-                        {cartIniciales.map((item) => (
-                          <div key={item.producto.id} className="flex justify-between items-center text-xs font-bold text-slate-200 border-b border-slate-900/60 pb-1">
-                            <span>{item.cantidad}x {item.producto.nombre}</span>
-                            <span className="font-mono text-slate-400">${formatCurrency(item.producto.precio * item.cantidad)}</span>
-                          </div>
-                        ))}
-                      </div>
+                {/* HISTORIAL DE PRODUCTOS YA PAGADOS EN ESTA MESA */}
+                {historialPagados.length > 0 && (
+                  <div className="bg-emerald-950/30 p-3.5 rounded-2xl border border-emerald-500/40 mb-4 space-y-2">
+                    <span className="text-[10px] font-black uppercase text-emerald-400 flex items-center gap-1.5 border-b border-emerald-500/20 pb-1.5">
+                      <History className="w-3.5 h-3.5 text-emerald-400" /> Productos Ya Pagados Anteriormente
+                    </span>
+                    <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                      {historialPagados.map((item, idx) => (
+                        <div key={idx} className="flex justify-between items-center text-xs font-bold text-emerald-200/90">
+                          <span className="flex items-center gap-1.5">
+                            <Check className="w-3 h-3 text-emerald-400 shrink-0" /> {item.cantidad}x {item.nombre}
+                          </span>
+                          <span className="font-mono text-[11px] text-emerald-400">
+                            ${formatCurrency(item.precio * item.cantidad)}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  )}
+                  </div>
+                )}
 
-                  {cartAdiciones.length > 0 && (
-                    <div className="pt-2 border-t border-slate-900">
-                      <h4 className="text-[10px] font-black text-rose-400 uppercase mb-1.5 flex items-center gap-1">
-                        ➕ Productos Añadidos Después:
-                      </h4>
-                      <div className="space-y-1">
-                        {cartAdiciones.map((item) => (
-                          <div key={item.producto.id} className="flex justify-between items-center text-xs font-bold text-rose-200 border-b border-slate-900/60 pb-1">
-                            <span>{item.cantidad}x {item.producto.nombre}</span>
-                            <span className="font-mono text-rose-300">${formatCurrency(item.producto.precio * item.cantidad)}</span>
+                {/* SELECCIÓN INTERACTIVA DE PRODUCTOS PENDIENTES DE PAGO */}
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <span className="text-xs font-black text-slate-300 uppercase flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-pink-400" /> Productos Pendientes a Pagar
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleSelectAllProducts}
+                      className={`px-2.5 py-1 text-[10px] font-black uppercase rounded-lg border transition-all cursor-pointer ${
+                        payAllProducts
+                          ? "bg-pink-500/20 text-pink-300 border-pink-500/50"
+                          : "bg-slate-900 text-slate-400 border-slate-800 hover:text-white"
+                      }`}
+                    >
+                      Seleccionar Todos
+                    </button>
+                  </div>
+
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                    {cart.map((item, idx) => {
+                      const key = getItemKey(item, idx);
+                      const isSelected = payAllProducts || selectedCartItemKeys.includes(key);
+
+                      return (
+                        <div
+                          key={key}
+                          onClick={() => toggleSelectItem(key)}
+                          className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer select-none ${
+                            isSelected
+                              ? "bg-slate-900 border-pink-500/60 text-white"
+                              : "bg-slate-950/50 border-slate-900 text-slate-500 hover:border-slate-800"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div
+                              className={`w-4 h-4 rounded-md border flex items-center justify-center transition-all ${
+                                isSelected ? "bg-pink-500 border-pink-400 text-white" : "border-slate-700 bg-slate-900"
+                              }`}
+                            >
+                              {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                            </div>
+                            <div>
+                              <span className="text-xs font-bold block">{item.cantidad}x {item.producto.nombre}</span>
+                              {item.es_adicion && (
+                                <span className="text-[9px] text-rose-400 font-bold">Adición #{item.lote_adicion}</span>
+                              )}
+                            </div>
                           </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                          <span className="font-mono text-xs font-bold">
+                            ${formatCurrency(item.producto.precio * item.cantidad)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <div className="bg-slate-950/60 p-3 rounded-2xl border border-slate-800 mb-4 flex items-center justify-between gap-3">
@@ -2016,7 +2282,7 @@ export default function HomePOS() {
 
                 <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-4 space-y-1.5">
                   <div className="flex justify-between text-xs font-bold text-slate-400">
-                    <span>Subtotal:</span>
+                    <span>Subtotal Seleccionado:</span>
                     <span className="font-mono">${formatCurrency(subtotalAmount)}</span>
                   </div>
                   {discountVal > 0 && (
@@ -2171,14 +2437,14 @@ export default function HomePOS() {
                   {saldoPendiente > 0 ? (
                     <div className="p-3 bg-rose-500/10 border border-rose-500/40 rounded-2xl flex items-center justify-between text-xs font-black text-rose-400">
                       <span className="flex items-center gap-1">
-                        <AlertCircle className="w-4 h-4" /> SALDO PENDIENTE / DEUDA:
+                        <AlertCircle className="w-4 h-4" /> SALDO PENDIENTE:
                       </span>
                       <span className="font-mono text-sm">${formatCurrency(saldoPendiente)}</span>
                     </div>
                   ) : (
                     <div className="p-3 bg-emerald-500/10 border border-emerald-500/40 rounded-2xl flex items-center justify-between text-xs font-black text-emerald-400">
                       <span className="flex items-center gap-1">
-                        <CheckCircle2 className="w-4 h-4" /> COMPRA TOTALMENTE CUBIERTA
+                        <CheckCircle2 className="w-4 h-4" /> SELECCIÓN TOTALMENTE CUBIERTA
                       </span>
                     </div>
                   )}
@@ -2186,25 +2452,72 @@ export default function HomePOS() {
 
                 <button
                   onClick={handleFinalizeSale}
-                  disabled={saldoPendiente > 0}
+                  disabled={saldoPendiente > 0 || itemsToPay.length === 0}
                   className={`w-full py-3.5 font-black uppercase text-xs rounded-2xl shadow-lg cursor-pointer transition-all ${
-                    saldoPendiente > 0
+                    saldoPendiente > 0 || itemsToPay.length === 0
                       ? "bg-slate-800 text-slate-500 cursor-not-allowed"
                       : "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 active:scale-95 shadow-[0_0_20px_rgba(16,185,129,0.4)]"
                   }`}
                 >
-                  {saldoPendiente > 0 ? "⚠️ Pago Incompleto (No se puede liberar mesa)" : "✅ Finalizar Venta y Liberar Mesa"}
+                  {saldoPendiente > 0 ? "⚠️ Pago Incompleto" : "✅ Finalizar Venta"}
                 </button>
               </>
             ) : (
               <div className="text-center py-6 space-y-4">
                 <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto animate-bounce" />
                 <h3 className="font-black text-xl text-white">¡Venta Registrada Exitosamente!</h3>
-                <p className="text-xs text-slate-400">La mesa ha sido liberada y restablecida correctamente.</p>
+                <p className="text-xs text-slate-400">Se procesó el pago de los productos seleccionados.</p>
                 <button onClick={() => { setShowCheckout(false); setSelectedMesa(null); }} className="w-full py-3 bg-pink-500 text-white font-black uppercase text-xs rounded-2xl cursor-pointer">
                   Volver al Mapa
                 </button>
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL GLOBAL DE ALERTAS PERSONALIZADAS DE ANTI CAFE */}
+      {customAlert.show && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border-2 border-amber-500/60 rounded-3xl p-6 max-w-sm w-full shadow-[0_0_30px_rgba(245,158,11,0.3)] relative text-center space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/40 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6 animate-pulse" />
+            </div>
+
+            <div>
+              <h3 className="font-black text-lg text-amber-400 tracking-wider">
+                ⚠️ ∀NTI CAFE ⚠️
+              </h3>
+              <p className="text-xs text-slate-200 font-bold mt-2 leading-relaxed">
+                {customAlert.mensaje}
+              </p>
+            </div>
+
+            {customAlert.isConfirm ? (
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={closeAlert}
+                  className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-xs uppercase rounded-xl transition-all cursor-pointer"
+                >
+                  {customAlert.cancelText || "CANCELAR"}
+                </button>
+                <button
+                  onClick={() => {
+                    closeAlert();
+                    if (customAlert.onConfirm) customAlert.onConfirm();
+                  }}
+                  className="flex-1 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black text-xs uppercase rounded-xl shadow-md transition-all cursor-pointer active:scale-95"
+                >
+                  {customAlert.confirmText || "ACEPTAR"}
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={closeAlert}
+                className="w-full py-2.5 bg-pink-500 hover:bg-pink-400 text-white font-black text-xs uppercase rounded-xl shadow-md transition-all cursor-pointer active:scale-95"
+              >
+                ENTENDIDO
+              </button>
             )}
           </div>
         </div>

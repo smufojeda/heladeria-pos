@@ -36,7 +36,9 @@ import {
   LayoutDashboard,
   UserCheck,
   CreditCard,
-  Filter
+  Filter,
+  Clock,
+  Award
 } from "lucide-react";
 
 interface PagoParcial {
@@ -135,7 +137,7 @@ export default function AdminDashboard() {
   const [estadoCaja, setEstadoCaja] = useState<EstadoCaja>({ abierta: false, monto_inicial: 0 });
   const [loading, setLoading] = useState(true);
 
-  const [activeTab, setActiveTab] = useState<"resumen" | "historial" | "stock" | "cierres">("resumen");
+  const [activeTab, setActiveTab] = useState<"resumen" | "estadisticas" | "historial" | "cierres" | "stock">("resumen");
 
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const [openItems, setOpenItems] = useState<Record<number, boolean>>({});
@@ -170,6 +172,20 @@ export default function AdminDashboard() {
     message: "",
     onConfirm: async () => {},
   });
+
+  // HELPER PARA FORMATEAR FECHA CON NOMBRE DE DÍA
+  const formatearFechaLarga = (fechaStr: string) => {
+    if (!fechaStr) return "";
+    const partes = fechaStr.split("-");
+    if (partes.length !== 3) return fechaStr;
+    const fechaObj = new Date(Number(partes[0]), Number(partes[1]) - 1, Number(partes[2]));
+    return fechaObj.toLocaleDateString("es-ES", {
+      weekday: "long",
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  };
 
   const obtenerMontoFiado = (v: Venta) => {
     if (v.desglose_pagos && Array.isArray(v.desglose_pagos) && v.desglose_pagos.length > 0) {
@@ -249,7 +265,6 @@ export default function AdminDashboard() {
     return gastosDiaActual.reduce((acc, g) => acc + (g.monto || 0), 0);
   }, [gastosDiaActual, cierreAbiertoActual]);
 
-  // MAPA PARA ASOCIAR EL CIERRE DIARIO A SU FECHA REAL DE APERTURA/REGISTRO
   const cierreFechaMap = useMemo(() => {
     const map: Record<number, string> = {};
     cierresDiarios.forEach((c) => {
@@ -258,7 +273,6 @@ export default function AdminDashboard() {
     return map;
   }, [cierresDiarios]);
 
-  // AGRUPACIÓN AJUSTADA SEGÚN LA FECHA DE APERTURA DEL CIERRE DIARIO
   const ventasPorDia = useMemo(() => {
     const grupos: Record<string, Venta[]> = {};
     ventas.forEach((v) => {
@@ -272,7 +286,6 @@ export default function AdminDashboard() {
     return grupos;
   }, [ventas, cierreFechaMap]);
 
-  // AGRUPACIÓN DE GASTOS ASOCIADA AL CIERRE DIARIO CORRESPONDIENTE
   const gastosPorDia = useMemo(() => {
     const grupos: Record<string, Gasto[]> = {};
     gastos.forEach((g) => {
@@ -293,6 +306,61 @@ export default function AdminDashboard() {
       return v.metodo_pago?.toLowerCase().includes("fiado");
     });
   }, [ventas]);
+
+  // ESTADÍSTICAS AVANZADAS
+  const estadisticasAvanzadas = useMemo(() => {
+    let diaMaxVenta = { fecha: "Sin registro", total: 0 };
+    const ventasPorHora: Record<number, { cant: number; total: number }> = {};
+    const ventasPorDiaSemana: Record<string, number> = {
+      lunes: 0,
+      martes: 0,
+      miércoles: 0,
+      jueves: 0,
+      viernes: 0,
+      sábado: 0,
+      domingo: 0,
+    };
+
+    // 1. Día de mayor venta
+    Object.entries(ventasPorDia).forEach(([fecha, vList]) => {
+      const totalDia = vList.reduce((sum, v) => sum + (v.total || 0), 0);
+      if (totalDia > diaMaxVenta.total) {
+        diaMaxVenta = { fecha, total: totalDia };
+      }
+    });
+
+    // 2. Horas con más ventas y Distribución semanal
+    ventas.forEach((v) => {
+      const dateObj = new Date(v.created_at);
+      const hora = dateObj.getHours();
+      const diaSemanaNombre = dateObj
+        .toLocaleDateString("es-ES", { weekday: "long" })
+        .toLowerCase();
+
+      // Por hora
+      if (!ventasPorHora[hora]) ventasPorHora[hora] = { cant: 0, total: 0 };
+      ventasPorHora[hora].cant += 1;
+      ventasPorHora[hora].total += v.total || 0;
+
+      // Por día de semana
+      if (ventasPorDiaSemana[diaSemanaNombre] !== undefined) {
+        ventasPorDiaSemana[diaSemanaNombre] += v.total || 0;
+      }
+    });
+
+    const horasOrdenadas = Object.entries(ventasPorHora)
+      .map(([h, val]) => ({ hora: Number(h), cant: val.cant, total: val.total }))
+      .sort((a, b) => b.total - a.total);
+
+    const ticketPromedio = ventas.length > 0 ? ventas.reduce((acc, v) => acc + (v.total || 0), 0) / ventas.length : 0;
+
+    return {
+      diaMaxVenta,
+      horasOrdenadas,
+      ventasPorDiaSemana,
+      ticketPromedio,
+    };
+  }, [ventasPorDia, ventas]);
 
   const toggleFolder = (fecha: string) => setOpenFolders((prev) => ({ ...prev, [fecha]: !prev[fecha] }));
   const toggleItems = (ventaId: number) => setOpenItems((prev) => ({ ...prev, [ventaId]: !prev[ventaId] }));
@@ -415,7 +483,6 @@ export default function AdminDashboard() {
       const fechaInicio = todasFechas[0] || new Date().toISOString().split("T")[0];
       const fechaFin = todasFechas[todasFechas.length - 1] || new Date().toISOString().split("T")[0];
 
-      // Sanitización para asegurar compatibilidad estricta con Supabase JSON/JSONB
       const payload = {
         fecha_inicio: fechaInicio,
         fecha_fin: fechaFin,
@@ -436,7 +503,6 @@ export default function AdminDashboard() {
         return;
       }
 
-      // Si la inserción fue exitosa, limpiamos las tablas dependientes
       const vIds = ventas.map((v) => v.id);
       const gIds = gastos.map((g) => g.id).filter(Boolean);
       const cdIds = cierresDiarios.map((c) => c.id);
@@ -516,7 +582,6 @@ export default function AdminDashboard() {
 
   const totalGastosCompras = useMemo(() => gastos.reduce((acc, g) => acc + (g.monto || 0), 0), [gastos]);
 
-  // SEMANAS FILTRADAS
   const semanasFiltradas = useMemo(() => {
     return cierresSemanales.filter((s) => {
       if (!fechaDesde && !fechaHasta) return true;
@@ -526,7 +591,6 @@ export default function AdminDashboard() {
     });
   }, [cierresSemanales, fechaDesde, fechaHasta]);
 
-  // ACUMULADOS DE SEMANAS FILTRADAS
   const acumuladoSemanasConsultadas = useMemo(() => {
     const totalRecaudado = semanasFiltradas.reduce((acc, s) => acc + (s.total_ingresos || 0), 0);
     const totalGastos = semanasFiltradas.reduce((acc, s) => acc + (s.total_gastos || 0), 0);
@@ -567,6 +631,7 @@ export default function AdminDashboard() {
 
   const maxVentaMetodo = useMemo(() => Math.max(...distribucionMetodos.map((d) => d.total), 1), [distribucionMetodos]);
   const maxCantProd = useMemo(() => Math.max(...topProductos.map((p) => p.cantidad), 1), [topProductos]);
+  const maxVentaDiaSemana = useMemo(() => Math.max(...Object.values(estadisticasAvanzadas.ventasPorDiaSemana), 1), [estadisticasAvanzadas]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased p-3 sm:p-6 lg:p-8">
@@ -652,7 +717,18 @@ export default function AdminDashboard() {
                 : "bg-slate-950/50 border-transparent text-slate-400 hover:text-slate-200"
             }`}
           >
-            <LayoutDashboard className="w-4 h-4" /> Resumen y Métricas
+            <LayoutDashboard className="w-4 h-4" /> Resumen General
+          </button>
+
+          <button
+            onClick={() => setActiveTab("estadisticas")}
+            className={`px-4 py-2.5 rounded-t-2xl font-black text-xs uppercase flex items-center gap-2 border-t border-x transition-all cursor-pointer whitespace-nowrap ${
+              activeTab === "estadisticas"
+                ? "bg-slate-900 border-slate-700 text-purple-400"
+                : "bg-slate-950/50 border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <BarChart3 className="w-4 h-4" /> Estadísticas y Rendimiento
           </button>
 
           <button
@@ -842,7 +918,105 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* PESTAÑA 2: HISTORIAL DE DÍAS */}
+        {/* PESTAÑA NUEVA: ESTADÍSTICAS Y RENDIMIENTO */}
+        {activeTab === "estadisticas" && (
+          <div className="space-y-6 animate-fadeIn">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* DIA DE MAYOR VENTA */}
+              <div className="bg-slate-900 border border-amber-500/30 p-5 rounded-3xl shadow-xl flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-black uppercase text-amber-400 block flex items-center gap-1.5">
+                    <Award className="w-4 h-4" /> Día Récord de Mayor Venta
+                  </span>
+                  <span className="text-lg font-black text-white capitalize block mt-1">
+                    {formatearFechaLarga(estadisticasAvanzadas.diaMaxVenta.fecha)}
+                  </span>
+                  <span className="text-[10px] font-bold text-slate-400 font-mono">
+                    ({estadisticasAvanzadas.diaMaxVenta.fecha})
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-2xl font-black font-mono text-amber-400 block">
+                    ${estadisticasAvanzadas.diaMaxVenta.total.toLocaleString()}
+                  </span>
+                  <span className="text-[9px] font-bold text-amber-500/80 uppercase">Total Recaudado</span>
+                </div>
+              </div>
+
+              {/* TICKET PROMEDIO */}
+              <div className="bg-slate-900 border border-purple-500/30 p-5 rounded-3xl shadow-xl flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-black uppercase text-purple-400 block flex items-center gap-1.5">
+                    <TrendingUp className="w-4 h-4" /> Ticket Promedio por Comanda
+                  </span>
+                  <p className="text-xs text-slate-400 font-bold mt-1">
+                    Promedio de consumo estimado por mesa/cliente.
+                  </p>
+                </div>
+                <div className="text-right">
+                  <span className="text-2xl font-black font-mono text-purple-300 block">
+                    ${Math.round(estadisticasAvanzadas.ticketPromedio).toLocaleString()}
+                  </span>
+                  <span className="text-[9px] font-bold text-purple-400/80 uppercase">Por Transacción</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* HORAS PICO DE VENTA */}
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-4">
+                <h3 className="text-sm font-black uppercase text-white flex items-center gap-2 border-b border-slate-800 pb-2">
+                  <Clock className="w-4 h-4 text-cyan-400" /> Horas de Mayor Flujo de Ventas
+                </h3>
+                <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                  {estadisticasAvanzadas.horasOrdenadas.length === 0 ? (
+                    <p className="text-xs text-slate-500 font-bold py-2 text-center">Sin transacciones registradas</p>
+                  ) : (
+                    estadisticasAvanzadas.horasOrdenadas.map((item) => (
+                      <div key={item.hora} className="p-2.5 bg-slate-950 border border-slate-800 rounded-2xl flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                          <span className="font-mono text-xs font-black text-slate-200">
+                            {item.hora.toString().padStart(2, "0")}:00 - {(item.hora + 1).toString().padStart(2, "0")}:00
+                          </span>
+                        </div>
+                        <div className="text-right flex items-center gap-3">
+                          <span className="text-[10px] font-bold text-slate-400">{item.cant} comandas</span>
+                          <span className="font-mono text-xs font-black text-emerald-400">${item.total.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* VENTAS POR DÍA DE LA SEMANA */}
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-4">
+                <h3 className="text-sm font-black uppercase text-white flex items-center gap-2 border-b border-slate-800 pb-2">
+                  <Calendar className="w-4 h-4 text-pink-400" /> Distribución Acumulada por Día de la Semana
+                </h3>
+                <div className="space-y-3">
+                  {Object.entries(estadisticasAvanzadas.ventasPorDiaSemana).map(([dia, total]) => {
+                    const porcentaje = Math.round((total / maxVentaDiaSemana) * 100);
+                    return (
+                      <div key={dia} className="space-y-1">
+                        <div className="flex justify-between text-xs font-bold">
+                          <span className="capitalize text-slate-300">{dia}</span>
+                          <span className="font-mono text-pink-400">${total.toLocaleString()}</span>
+                        </div>
+                        <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
+                          <div className="bg-gradient-to-r from-pink-500 to-purple-500 h-full rounded-full" style={{ width: `${porcentaje}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* PESTAÑA 3: HISTORIAL DE DÍAS */}
         {activeTab === "historial" && (
           <div className="space-y-4 animate-fadeIn">
             {loading ? (
@@ -885,9 +1059,11 @@ export default function AdminDashboard() {
                       <button onClick={() => toggleFolder(fecha)} className="flex items-center gap-3 cursor-pointer text-left">
                         {isOpen ? <FolderOpen className="w-5 h-5 text-pink-400" /> : <Folder className="w-5 h-5 text-pink-500" />}
                         <div>
-                          <span className="font-black text-xs sm:text-sm text-white block">{fecha}</span>
+                          <span className="font-black text-xs sm:text-sm text-white capitalize block">
+                            {formatearFechaLarga(fecha)}
+                          </span>
                           <span className="text-[10px] font-bold text-slate-400">
-                            {ventasDia.length} Transacciones | {gastosDia.length} Gastos
+                            {fecha} | {ventasDia.length} Transacciones | {gastosDia.length} Gastos
                           </span>
                         </div>
                       </button>
@@ -1066,7 +1242,7 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* PESTAÑA 3: AUDITORÍA DE CIERRES DIARIOS (COMPACTADA CON OJITO) */}
+        {/* PESTAÑA 4: AUDITORÍA DE CIERRES DIARIOS */}
         {activeTab === "cierres" && (
           <div className="space-y-4 animate-fadeIn">
             <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5">
@@ -1087,12 +1263,13 @@ export default function AdminDashboard() {
 
                     return (
                       <div key={cd.id} className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-2 relative shadow-lg">
-                        {/* CABECERA COMPACTA CON FECHA Y TOTAL VENTAS */}
                         <div className="flex justify-between items-center pr-6">
                           <div>
-                            <span className="font-black text-xs text-amber-300 block">{cd.fecha}</span>
+                            <span className="font-black text-xs text-amber-300 capitalize block">
+                              {formatearFechaLarga(cd.fecha)}
+                            </span>
                             <span className="text-[9px] text-slate-500 font-mono">
-                              {new Date(cd.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                              {cd.fecha} | {new Date(cd.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                             </span>
                           </div>
 
@@ -1119,13 +1296,11 @@ export default function AdminDashboard() {
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
 
-                        {/* RESUMEN VISIBLE DE VENTAS SIN DESCUENTO */}
                         <div className="p-2 bg-purple-950/30 border border-purple-500/30 rounded-xl flex justify-between items-center">
                           <span className="text-[10px] font-black uppercase text-purple-300">TOTAL VENTAS DEL DÍA (SIN DESCUENTO):</span>
                           <span className="font-mono text-xs font-black text-purple-300">${totalVentasSinDescuento.toLocaleString()}</span>
                         </div>
 
-                        {/* DESGLOSE COMPLETO DESPLEGABLE CON EL OJITO */}
                         {isCierreOpen && (
                           <div className="space-y-1.5 text-xs pt-2 border-t border-slate-900 animate-fadeIn">
                             {cd.quien_abre && (
@@ -1195,7 +1370,7 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* PESTAÑA 4: CONTROL DE STOCK */}
+        {/* PESTAÑA 5: CONTROL DE STOCK */}
         {activeTab === "stock" && (
           <div className="space-y-4 animate-fadeIn">
             <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5">
@@ -1271,7 +1446,7 @@ export default function AdminDashboard() {
                   <div key={g.id || idx} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex items-center justify-between">
                     <div>
                       <span className="font-black text-xs text-slate-200 block">{g.descripcion}</span>
-                      <span className="text-[10px] font-bold text-slate-500">{g.fecha}</span>
+                      <span className="text-[10px] font-bold text-slate-500 capitalize">{formatearFechaLarga(g.fecha)}</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <span className="font-mono text-xs font-black text-rose-400">-${g.monto?.toLocaleString()}</span>
@@ -1400,12 +1575,11 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* MODAL HISTORIAL SEMANAL (CON FILTRO DE FECHAS Y ACUMULADOS GLOBALES DE SEMANAS) */}
+      {/* MODAL HISTORIAL SEMANAL */}
       {showHistorialSemanalModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 max-w-4xl w-full shadow-2xl relative space-y-4 max-h-[90vh] flex flex-col">
             
-            {/* CABECERA MODAL */}
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h3 className="font-black text-base sm:text-lg text-white flex items-center gap-2">
                 <History className="w-5 h-5 text-purple-400" /> Historial y Archivo Semanal
@@ -1415,7 +1589,6 @@ export default function AdminDashboard() {
               </button>
             </div>
 
-            {/* FILTRO DE FECHAS */}
             <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-xs font-black text-purple-400 uppercase">
                 <Filter className="w-4 h-4" /> Consultar por Rango de Fechas:
@@ -1453,7 +1626,6 @@ export default function AdminDashboard() {
               </div>
             </div>
 
-            {/* TARJETAS ACUMULADAS DE LAS SEMANAS CONSULTADAS */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="bg-slate-950 border border-emerald-500/30 p-3 rounded-2xl">
                 <span className="text-[9px] font-black uppercase text-slate-400 block">Total Recaudado Global (Semanas)</span>
@@ -1477,7 +1649,6 @@ export default function AdminDashboard() {
               </div>
             </div>
 
-            {/* LISTA DE CARPETAS DE SEMANAS */}
             <div className="flex-1 overflow-y-auto space-y-3 pr-1">
               {semanasFiltradas.length === 0 ? (
                 <p className="text-xs text-slate-500 font-bold text-center py-8">No se encontraron semanas guardadas en el rango seleccionado.</p>
@@ -1492,7 +1663,7 @@ export default function AdminDashboard() {
                           {isOpen ? <FolderOpen className="w-5 h-5 text-purple-400" /> : <Folder className="w-5 h-5 text-purple-500" />}
                           <div>
                             <span className="font-black text-xs sm:text-sm text-purple-300 uppercase block">
-                              Semana: {semana.fecha_inicio} al {semana.fecha_fin}
+                              Semana: {formatearFechaLarga(semana.fecha_inicio)} al {formatearFechaLarga(semana.fecha_fin)}
                             </span>
                             <span className="text-[10px] text-slate-400 font-bold">
                               Ingresos: ${semana.total_ingresos?.toLocaleString()} | Gastos: ${semana.total_gastos?.toLocaleString()}
@@ -1519,10 +1690,8 @@ export default function AdminDashboard() {
                         </div>
                       </div>
 
-                      {/* DESGLOSE INTERNO DE LA SEMANA */}
                       {isOpen && (
                         <div className="p-3 space-y-3 bg-slate-950/60">
-                          {/* REGISTROS DE AUDITORÍA DE CIERRE DE ESTA SEMANA */}
                           {semana.cierres_diarios_resumen && semana.cierres_diarios_resumen.length > 0 && (
                             <div className="space-y-2">
                               <h5 className="text-[10px] font-black uppercase text-amber-400 flex items-center gap-1">
@@ -1532,7 +1701,7 @@ export default function AdminDashboard() {
                                 {semana.cierres_diarios_resumen.map((cd) => (
                                   <div key={cd.id} className="p-2.5 bg-slate-900 rounded-xl border border-slate-800 text-xs space-y-1">
                                     <div className="flex justify-between font-bold">
-                                      <span className="text-amber-300">{cd.fecha}</span>
+                                      <span className="text-amber-300 capitalize">{formatearFechaLarga(cd.fecha)}</span>
                                       <span className={`text-[8px] uppercase px-1.5 py-0.5 rounded ${cd.es_cuadrado ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
                                         {cd.es_cuadrado ? "Cuadrado" : "Diferencia"}
                                       </span>
@@ -1547,7 +1716,6 @@ export default function AdminDashboard() {
                             </div>
                           )}
 
-                          {/* RESUMEN DE VENTAS DE ESA SEMANA */}
                           {semana.ventas_resumen && semana.ventas_resumen.length > 0 && (
                             <div className="space-y-1">
                               <h5 className="text-[10px] font-black uppercase text-slate-400">Ventas de esta Semana ({semana.ventas_resumen.length}):</h5>
