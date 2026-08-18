@@ -39,7 +39,17 @@ import {
   RotateCcw,
   UserCheck,
   Users,
-  History
+  History,
+  Box,
+  Coffee,
+  CupSoda,
+  Utensils,
+  UtensilsCrossed,
+  Share2,
+  Pizza,
+  Gift,
+  Beer,
+  Tag
 } from "lucide-react";
 
 type EstadoMesa = "libre" | "pendiente_servir" | "preparado" | "servido" | "pendiente_pago";
@@ -62,6 +72,7 @@ interface Producto {
   descripcion: string;
   disponible: boolean;
   stock?: number;
+  imagen_url?: string;
 }
 
 interface CartItem {
@@ -140,6 +151,22 @@ const getNombreOriginal = (numero: number, idx: number) => {
   if (idx === 5) return "Barra 1";
   if (idx === 6) return "Barra 2";
   return `Espacio ${numero}`;
+};
+
+// Función auxiliar para obtener ícono según categoría
+const getCategoryIcon = (categoria: string) => {
+  const cat = (categoria || "").toLowerCase();
+  
+  if (cat.includes("caliente")) return <Coffee className="w-10 h-10 stroke-[1.5]" />;
+  if (cat.includes("fría") || cat.includes("fria") || cat.includes("bebida")) return <CupSoda className="w-10 h-10 stroke-[1.5]" />;
+  if (cat.includes("comida")) return <Utensils className="w-10 h-10 stroke-[1.5]" />;
+  if (cat.includes("tapas")) return <UtensilsCrossed className="w-10 h-10 stroke-[1.5]" />;
+  if (cat.includes("compartir")) return <Share2 className="w-10 h-10 stroke-[1.5]" />;
+  if (cat.includes("bruschetta")) return <Pizza className="w-10 h-10 stroke-[1.5]" />;
+  if (cat.includes("combo")) return <Gift className="w-10 h-10 stroke-[1.5]" />;
+  if (cat.includes("alcohol") || cat.includes("licor") || cat.includes("cerveza")) return <Beer className="w-10 h-10 stroke-[1.5]" />;
+  
+  return <Tag className="w-10 h-10 stroke-[1.5]" />;
 };
 
 export default function HomePOS() {
@@ -581,55 +608,61 @@ export default function HomePOS() {
     }
   };
 
-  const finalizarCierreDia = async (declarado: number, diferencia: number, razon: string) => {
-    if (!cierreActivo) return;
+ const finalizarCierreDia = async (declarado: number, diferencia: number, razon: string) => {
+  if (!cierreActivo) return;
 
-    const resCalculado = await calcularTotalesTurno();
+  // --- GUARDRAÍL DE SEGURIDAD ---
+  if (diferencia !== 0 && !razon.trim()) {
+    triggerAlert("Se requiere una justificación obligatoria para guardar la diferencia.");
+    return;
+  }
 
-    const updatePayload = {
-      monto_cierre_declarado: declarado,
-      monto_cierre_esperado: resCalculado.totalCajaEsperado,
-      diferencia: declarado - resCalculado.totalCajaEsperado,
-      razon_diferencia: razon,
-      es_cuadrado: (declarado - resCalculado.totalCajaEsperado) === 0,
-      total_efectivo: resCalculado.tEfectivo,
-      total_nequi: resCalculado.tNequi,
-      total_daviplata: resCalculado.tDaviplata,
-      total_tarjeta: resCalculado.tTarjeta,
-      total_fiado: resCalculado.tFiado,
-      total_gastos: resCalculado.tGastos,
-      cobro_turno: resCalculado.cobroTurno,
-      empleado_turno: nombreEmpleadoTurno.trim(),
-      estado: "cerrado"
-    };
+  const resCalculado = await calcularTotalesTurno();
 
-    const { error } = await supabase
-      .from("cierres_diarios")
-      .update(updatePayload)
-      .eq("id", cierreActivo.id);
-
-    if (error) {
-      triggerAlert("Error al finalizar el cierre de día: " + error.message);
-      return;
-    }
-
-    try {
-      await supabase.from("caja_estado").upsert({
-        id: 1,
-        abierta: false,
-        monto_inicial: 0
-      });
-    } catch (_) {}
-
-    setCierreActivo(null);
-    setShowCierreModal(false);
-    setShowRazonModal(false);
-    setEfectivoCierreInput("");
-    setRazonDiferencia("");
-    setMontoCobroTurnoInput("");
-    setNombreEmpleadoTurno("");
-    triggerAlert("¡Cierre de día guardado con éxito!");
+  const updatePayload = {
+    monto_cierre_declarado: declarado,
+    monto_cierre_esperado: resCalculado.totalCajaEsperado,
+    diferencia: declarado - resCalculado.totalCajaEsperado,
+    razon_diferencia: razon.trim(),
+    es_cuadrado: (declarado - resCalculado.totalCajaEsperado) === 0,
+    total_efectivo: resCalculado.tEfectivo,
+    total_nequi: resCalculado.tNequi,
+    total_daviplata: resCalculado.tDaviplata,
+    total_tarjeta: resCalculado.tTarjeta,
+    total_fiado: resCalculado.tFiado,
+    total_gastos: resCalculado.tGastos,
+    cobro_turno: resCalculado.cobroTurno,
+    empleado_turno: nombreEmpleadoTurno.trim(),
+    estado: "cerrado"
   };
+
+  const { error } = await supabase
+    .from("cierres_diarios")
+    .update(updatePayload)
+    .eq("id", cierreActivo.id);
+
+  if (error) {
+    triggerAlert("Error al finalizar el cierre de día: " + error.message);
+    return;
+  }
+
+  try {
+    await supabase.from("caja_estado").upsert({
+      id: 1,
+      abierta: false,
+      monto_inicial: 0
+    });
+  } catch (_) {}
+
+  setCierreActivo(null);
+  setShowCierreModal(false);
+  setShowRazonModal(false);
+  setEfectivoCierreInput("");
+  setRazonDiferencia("");
+  setMontoCobroTurnoInput("");
+  setNombreEmpleadoTurno("");
+  triggerAlert("¡Cierre de día guardado con éxito!");
+};
 
   const handleSelectMesa = async (mesa: Mesa) => {
     if (vista === "caja" && mesa.estado === "libre") return;
@@ -1617,28 +1650,67 @@ export default function HomePOS() {
                 </div>
 
                 <div className="flex-1 p-3 sm:p-6 overflow-y-auto pb-28 lg:pb-6">
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {/* REDISEÑO DE TARJETAS DE PRODUCTOS - COMPACTAS Y CON ÍCONO DINÁMICO */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {filteredProducts.map((p) => (
                       <div
                         key={p.id}
                         onClick={() => addToCart(p)}
-                        className={`bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl flex flex-col justify-between transition-all duration-150 select-none ${
+                        className={`relative rounded-2xl p-3 bg-slate-950/80 border border-indigo-900/60 shadow-[0_0_15px_rgba(30,27,75,0.4)] flex items-center justify-between gap-3 transition-all duration-200 select-none overflow-hidden ${
                           vista === "mesero" 
-                            ? "cursor-pointer hover:border-pink-500/50 active:scale-90 active:border-pink-400 active:bg-pink-500/20 shadow-lg" 
+                            ? "cursor-pointer hover:border-pink-500/60 hover:shadow-[0_0_25px_rgba(236,72,153,0.25)] active:scale-98" 
                             : "opacity-60 cursor-not-allowed"
                         }`}
                       >
-                        <div>
-                          <span className="text-[8px] font-black uppercase text-pink-400 bg-pink-500/10 px-2 py-0.5 rounded-full">{p.categoria}</span>
-                          <h4 className="font-black text-xs sm:text-sm text-white mt-1">{p.nombre}</h4>
-                          <p className="text-[9px] font-mono text-slate-400 mt-0.5">Stock: {p.stock ?? 50}</p>
-                        </div>
-                        <div className="mt-3 pt-2 border-t border-slate-800/80 flex justify-between items-center">
-                          <span className="font-black text-xs sm:text-sm text-emerald-400 font-mono">${formatCurrency(p.precio)}</span>
-                          {vista === "mesero" && (
-                            <span className="w-6 h-6 rounded-lg bg-pink-500/20 text-pink-400 font-black flex items-center justify-center text-xs transition-transform active:scale-125">+</span>
+                        {/* ILUSTRACIÓN / ÍCONO DINÁMICO POR CATEGORÍA */}
+                        <div className="relative w-20 h-20 sm:w-22 sm:h-22 shrink-0 flex items-center justify-center rounded-xl bg-slate-900/60 overflow-hidden">
+                          {p.imagen_url ? (
+                            <img 
+                              src={p.imagen_url} 
+                              alt={p.nombre} 
+                              className="w-full h-full object-contain p-1 filter drop-shadow-[0_8px_12px_rgba(0,0,0,0.8)]"
+                            />
+                          ) : (
+                            <div className="flex flex-col items-center justify-center text-pink-400">
+                              {getCategoryIcon(p.categoria)}
+                            </div>
                           )}
                         </div>
+
+                        {/* INFORMACIÓN Y METRADOS EN UNA SOLA LÍNEA/COLUMNA OPTIMIZADA */}
+                        <div className="flex-1 flex flex-col justify-center gap-1.5 min-w-0">
+                          <h4 className="font-black text-base sm:text-lg text-white tracking-tight truncate leading-tight">
+                            {p.nombre}
+                          </h4>
+
+                          <div className="flex items-center gap-2">
+                            {/* BADGE DE STOCK COMPACTO */}
+                            <div className="flex items-center gap-1.5 bg-indigo-950/60 border border-indigo-800/80 px-2 py-1 rounded-xl">
+                              <Box className="w-3.5 h-3.5 text-indigo-400" />
+                              <div className="flex items-center gap-1 leading-none">
+                                <span className="text-[8px] font-black uppercase tracking-wider text-indigo-300">STOCK</span>
+                                <span className="font-mono font-black text-xs text-white">{p.stock ?? 50}</span>
+                              </div>
+                            </div>
+
+                            {/* PRECIO COMPACTO */}
+                            <div className="bg-slate-900/90 border border-slate-800 px-2.5 py-1 rounded-xl flex items-center justify-center">
+                              <span className="font-mono font-black text-sm sm:text-base text-emerald-400 tracking-tight">
+                                ${formatCurrency(p.precio)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* BOTÓN + ROSADO */}
+                        {vista === "mesero" && (
+                          <button
+                            type="button"
+                            className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-tr from-pink-500 to-rose-500 text-white font-black text-xl flex items-center justify-center shrink-0 shadow-[0_0_15px_rgba(236,72,153,0.5)] hover:scale-105 active:scale-95 transition-transform"
+                          >
+                            +
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -2160,7 +2232,7 @@ export default function HomePOS() {
               <h3 className="font-black text-base text-white flex items-center gap-2">
                 <Lock className="w-5 h-5 text-amber-400" /> Cierre de Día
               </h3>
-              <button onClick={() => setShowCierreModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
+              <button onClick={() => setShowCierreModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
             </div>
 
             <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs font-bold">
@@ -2200,36 +2272,42 @@ export default function HomePOS() {
         </div>
       )}
 
-      {/* MODAL RAZÓN DE DIFERENCIA */}
-      {showRazonModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
-            <h3 className="font-black text-sm text-rose-400 flex items-center gap-2 uppercase">
-              <AlertTriangle className="w-5 h-5 text-rose-500" /> Valor Inexacto
-            </h3>
-            <p className="text-xs font-bold text-slate-300">
-              ¿Razón por la cual no es igual el dinero ingresado con la base y ventas en efectivo?
-            </p>
-            <textarea
-              rows={3}
-              placeholder="Explica el motivo (ej: cambio mal entregado, pago no registrado...)"
-              value={razonDiferencia}
-              onChange={(e) => setRazonDiferencia(e.target.value)}
-              className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-rose-500"
-            />
-            <button
-              onClick={() => {
-                const dec = parseCurrencyToNumber(efectivoCierreInput);
-                const esp = resumenCierre?.totalCajaEsperado || 0;
-                finalizarCierreDia(dec, dec - esp, razonDiferencia);
-              }}
-              className="w-full py-3 bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase rounded-xl cursor-pointer"
-            >
-              Aceptar y Finalizar Cierre
-            </button>
-          </div>
-        </div>
-      )}
+     {/* MODAL RAZÓN DE DIFERENCIA */}
+{showRazonModal && (
+  <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
+    <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative space-y-4">
+      <h3 className="font-black text-sm text-rose-400 flex items-center gap-2 uppercase">
+        <AlertTriangle className="w-5 h-5 text-rose-500" /> Valor Inexacto
+      </h3>
+      <p className="text-xs font-bold text-slate-300">
+        ¿Razón por la cual no es igual el dinero ingresado con la base y ventas en efectivo?
+      </p>
+      <textarea
+        rows={3}
+        placeholder="Explica el motivo (ej: cambio mal entregado, pago no registrado...)"
+        value={razonDiferencia}
+        onChange={(e) => setRazonDiferencia(e.target.value)}
+        className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-rose-500"
+      />
+      <button
+        onClick={() => {
+          // --- NUEVA VALIDACIÓN AQUÍ ---
+          if (!razonDiferencia.trim()) {
+            triggerAlert("Debes escribir la justificación de la diferencia antes de cerrar el día.");
+            return;
+          }
+          
+          const dec = parseCurrencyToNumber(efectivoCierreInput);
+          const esp = resumenCierre?.totalCajaEsperado || 0;
+          finalizarCierreDia(dec, dec - esp, razonDiferencia.trim());
+        }}
+        className="w-full py-3 bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase rounded-xl cursor-pointer"
+      >
+        Aceptar y Finalizar Cierre
+      </button>
+    </div>
+  </div>
+)}
 
       {/* MODAL COBRO EN CAJA CON HISTORIAL DE PRODUCTOS YA PAGADOS */}
       {showCheckout && selectedMesa && (
